@@ -24,8 +24,13 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import hljs from "highlight.js/lib/common";
 import { editorTheme, markdownHighlight } from "./editor-theme";
-import { prefs, fileName, dirName, samePath, isInside } from "./prefs";
+import { prefs, fileName, dirName, samePath, isInside, relativePath } from "./prefs";
 import { createSidebar } from "./sidebar";
+import { createOutline } from "./outline";
+import { createSearch } from "./search";
+import { fuzzy, openPalette, type PaletteItem } from "./palette";
+import { formatKeymap } from "./format";
+import { IMAGE_FILE, altText, linkTarget, pastedImage, saveImage } from "./images";
 import { enhance, RICH_LANGUAGES } from "./rich";
 import { showMenu, showMenuAt, type MenuItem } from "./menu";
 import { copy, editorItems, loadEditors, pathItems, reportError, run, toast } from "./actions";
@@ -34,6 +39,9 @@ import { WELCOME } from "./welcome";
 
 type Mode = "edit" | "split" | "preview";
 type Theme = "light" | "dark";
+type Tab = "files" | "outline" | "search";
+/** A place in the document: 1-based line, plus an optional UTF-16 column and selection length. */
+type At = { line: number; col?: number; len?: number };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const appWindow = getCurrentWindow();
@@ -132,9 +140,13 @@ function editorExtensions() {
     markdown({ base: markdownLanguage, codeLanguages: languages }),
     syntaxHighlighting(markdownHighlight),
     editorTheme,
-    keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
+    keymap.of([...formatKeymap, ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
+    EditorView.domEventHandlers({ paste: pasteImage }),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) scheduleRender();
+      if (u.docChanged) {
+        scheduleRender();
+        queueOutline();
+      }
       if (u.selectionSet || u.docChanged) updateCursorStatus();
       if (u.selectionSet) queueSavePosition();
       if (u.heightChanged || u.geometryChanged) pairs = null;
@@ -147,7 +159,8 @@ const view = new EditorView({
   state: EditorState.create({ doc: "", extensions: editorExtensions() }),
 });
 
-function setDocument(text: string, path: string | null) {
+/** Replace the document. `at` jumps to a place instead of restoring the last position. */
+function setDocument(text: string, path: string | null, at?: At) {
   savePosition(); // for the document being replaced
   doc.crlf = text.includes("\r\n");
   const normalized = doc.crlf ? text.replace(/\r\n/g, "\n") : text;
@@ -158,13 +171,54 @@ function setDocument(text: string, path: string | null) {
   view.setState(EditorState.create({ doc: normalized, extensions: editorExtensions() }));
   view.scrollDOM.scrollTop = 0;
   previewPane.scrollTop = 0;
-  if (path) restorePosition(path);
+  if (at) void reveal(at);
+  else if (path) restorePosition(path);
   prefs.set("lastFile", path);
   updateTitle();
   updateCursorStatus();
   scheduleRender();
+  queueOutline();
   void invoke("watch_file", { path });
   sidebar.setActive(path);
+}
+
+/** Select a place in the document and scroll it to the top of the editor (or preview). */
+async function reveal(at: At) {
+  const d = view.state.doc;
+  const line = d.line(Math.min(Math.max(1, at.line), d.lines));
+  const from = Math.min(line.from + (at.col ?? 0), line.to);
+  const to = Math.min(from + (at.len ?? 0), line.to);
+  lastScrollSource = "editor";
+  view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: "start", yMargin: 48 }) });
+  if (mode !== "preview") return view.focus();
+  if (previewStale) await render();
+  scrollPreviewTo(line.number);
+}
+
+/** Scroll the preview to the block rendered from source line `line`. */
+function scrollPreviewTo(line: number) {
+  let target: HTMLElement | null = null;
+  for (const el of preview.querySelectorAll<HTMLElement>("[data-sourcepos]")) {
+    if (parseInt(el.dataset.sourcepos!, 10) > line) break;
+    target = el;
+  }
+  const offset = target ? target.getBoundingClientRect().top - previewPane.getBoundingClientRect().top - 16 : -Infinity;
+  previewPane.scrollTop = Math.max(0, previewPane.scrollTop + offset);
+}
+
+/** The source line at the top of whichever pane the reader is looking at. */
+function topLine(): number {
+  if (mode === "preview") {
+    const top = previewPane.getBoundingClientRect().top + 24;
+    let line = 1;
+    for (const el of preview.querySelectorAll<HTMLElement>("[data-sourcepos]")) {
+      if (el.getBoundingClientRect().top > top) break;
+      line = parseInt(el.dataset.sourcepos!, 10);
+    }
+    return line;
+  }
+  const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop - view.documentPadding.top + 24);
+  return view.state.doc.lineAt(block.from).number;
 }
 
 /** Bring in an external edit as a minimal change, so scroll position, cursor and undo history survive. */
@@ -374,6 +428,7 @@ function syncScroll(source: "editor" | "preview") {
 
 function onScroll(source: "editor" | "preview", el: HTMLElement) {
   if (source === "editor") queueSavePosition();
+  queueOutlineHighlight();
   // Ignore the scroll event caused by our own programmatic sync.
   if (Math.abs(el.scrollTop - expected[source]) <= 1) {
     expected[source] = -1;
@@ -485,14 +540,14 @@ async function confirmDiscard(): Promise<boolean> {
   });
 }
 
-async function openPath(path: string, quiet = false) {
+async function openPath(path: string, opts: { quiet?: boolean; at?: At } = {}) {
   if (!(await confirmDiscard())) return false;
   try {
-    setDocument(await invoke<string>("read_file", { path }), path);
+    setDocument(await invoke<string>("read_file", { path }), path, opts.at);
     return true;
   } catch (err) {
     sidebar.removeRecent(path);
-    if (!quiet) await message(String(err), { title: "Inkwell", kind: "error" });
+    if (!opts.quiet) await message(String(err), { title: "Inkwell", kind: "error" });
     return false;
   }
 }
@@ -531,6 +586,7 @@ async function saveDocument(saveAs = false): Promise<boolean> {
   doc.savedText = text;
   doc.dirty = false;
   updateTitle();
+  search.refresh();
   if (pathChanged) {
     scheduleRender(); // relative image paths may now resolve
     void invoke("watch_file", { path });
@@ -568,6 +624,158 @@ const sidebar = createSidebar({
     updateTitle();
   },
 });
+
+// ---------------------------------------------------------------------------
+// Sidebar panels: files, outline, folder search
+
+let tab = prefs.get<Tab>("sidebarTab", "files");
+
+const outline = createOutline($("outline"), {
+  state: () => view.state,
+  topLine,
+  reveal: (line) => void reveal({ line }),
+});
+
+const search = createSearch({
+  root: () => sidebar.root(),
+  openAt: (path, line, col, len) => {
+    const at = { line, col, len };
+    if (samePath(path, doc.path)) void reveal(at);
+    else void openPath(path, { at });
+  },
+});
+
+const outlineShown = () => tab === "outline" && sidebar.visible();
+
+function showTab(next: Tab) {
+  tab = next;
+  prefs.set("sidebarTab", next);
+  for (const b of document.querySelectorAll<HTMLElement>(".sb-tab")) {
+    b.classList.toggle("active", b.dataset.tab === next);
+    b.setAttribute("aria-selected", String(b.dataset.tab === next));
+  }
+  for (const p of document.querySelectorAll<HTMLElement>(".sb-panel")) p.hidden = p.dataset.panel !== next;
+  if (outlineShown()) outline.render();
+}
+
+for (const b of document.querySelectorAll<HTMLElement>(".sb-tab")) {
+  b.addEventListener("click", () => showTab(b.dataset.tab as Tab));
+}
+
+function toggleSidebar() {
+  sidebar.toggle();
+  if (outlineShown()) outline.render();
+}
+
+let outlineTimer = 0;
+function queueOutline() {
+  clearTimeout(outlineTimer);
+  if (outlineShown()) outlineTimer = window.setTimeout(outline.render, 250);
+}
+
+let outlineFrame = 0;
+function queueOutlineHighlight() {
+  if (outlineFrame || !outlineShown()) return;
+  outlineFrame = requestAnimationFrame(() => {
+    outlineFrame = 0;
+    outline.highlight();
+  });
+}
+
+function showOutline() {
+  sidebar.show();
+  showTab("outline");
+}
+
+function searchFolder() {
+  sidebar.show();
+  showTab("search");
+  const sel = view.state.selection.main;
+  search.focus(view.hasFocus ? view.state.sliceDoc(sel.from, sel.to) : undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Quick open (Ctrl+P): fuzzy-find any markdown file in the folder
+
+let fileCache: { root: string; files: string[] } | null = null;
+
+function quickOpenItems(query: string, root: string | null, files: string[]): PaletteItem[] {
+  const recent = sidebar.recent();
+  const seen = new Set<string>(doc.path ? [doc.path.toLowerCase()] : []);
+  const paths = [...recent, ...files].filter((p) => !seen.has(p.toLowerCase()) && seen.add(p.toLowerCase()));
+  const scored: { score: number; item: PaletteItem }[] = [];
+  paths.forEach((path, i) => {
+    const name = fileName(path);
+    const rel = root && isInside(path, root) ? relativePath(root, path) : path;
+    const dir = rel.slice(0, Math.max(0, rel.length - name.length - 1));
+    const item: PaletteItem = { label: name, detail: dir, run: () => openPath(path) };
+    let score = -i; // no query: recent files first, then alphabetical
+    if (query.trim()) {
+      const byName = fuzzy(query, name);
+      const byPath = byName ? null : fuzzy(query, rel);
+      if (byName) {
+        score = byName.score + 20;
+        item.labelMarks = byName.indices;
+      } else if (byPath) {
+        const nameStart = rel.length - name.length;
+        score = byPath.score;
+        item.labelMarks = byPath.indices.filter((x) => x >= nameStart).map((x) => x - nameStart);
+        item.detailMarks = byPath.indices.filter((x) => x < dir.length);
+      } else return;
+      if (i < recent.length) score += 3;
+    }
+    scored.push({ score, item });
+  });
+  return scored.sort((a, b) => b.score - a.score).map((s) => s.item);
+}
+
+async function quickOpen() {
+  const root = sidebar.root() ?? (doc.path ? dirName(doc.path) : null);
+  let files = root && fileCache && samePath(fileCache.root, root) ? fileCache.files : [];
+  const palette = openPalette({
+    placeholder: root ? `Go to file in ${fileName(root)}` : "Go to a recent file",
+    empty: "No matching files",
+    items: (q) => quickOpenItems(q, root, files),
+  });
+  if (!root) return;
+  const fresh = await invoke<string[]>("list_markdown", { root });
+  fileCache = { root, files: fresh };
+  if (fresh.join("\n") !== files.join("\n")) {
+    files = fresh;
+    palette.update();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Images: paste a screenshot into ./assets, or drop image files to link them
+
+function insertText(text: string) {
+  view.dispatch(view.state.replaceSelection(text), { scrollIntoView: true, userEvent: "input.paste" });
+  view.focus();
+}
+
+function pasteImage(e: ClipboardEvent) {
+  const file = pastedImage(e.clipboardData);
+  if (!file) return false;
+  e.preventDefault();
+  if (!doc.path) {
+    toast("Save the document first to paste images");
+    return true;
+  }
+  saveImage(file, dirName(doc.path)).then((rel) => {
+    const sel = view.state.selection.main;
+    const alt = view.state.sliceDoc(sel.from, sel.to).replace(/[[\]\n]/g, "");
+    insertText(`![${alt}](${linkTarget(rel)})`);
+    toast(`Saved ${rel}`);
+  }, reportError);
+  return true;
+}
+
+function linkImages(paths: string[]) {
+  if (!doc.path) return toast("Save the document first to link images");
+  const base = dirName(doc.path);
+  insertText(paths.map((p) => `![${altText(p)}](${linkTarget(relativePath(base, p))})`).join("\n"));
+}
 
 // ---------------------------------------------------------------------------
 // Export & rich copy
@@ -703,6 +911,10 @@ function moreMenu(): MenuItem[] {
     { label: "Open file…", shortcut: "Ctrl+O", action: openDialog },
     { label: "Open folder…", action: () => $("btn-open-folder").click() },
     "-",
+    { label: "Go to file…", shortcut: "Ctrl+P", action: quickOpen },
+    { label: "Search in folder", shortcut: "Ctrl+Shift+F", action: searchFolder },
+    { label: "Outline", shortcut: "Ctrl+Shift+O", action: showOutline },
+    "-",
     { label: "Save", shortcut: "Ctrl+S", action: () => saveDocument() },
     { label: "Save as…", shortcut: "Ctrl+Shift+S", action: () => saveDocument(true) },
     "-",
@@ -717,7 +929,7 @@ function moreMenu(): MenuItem[] {
           "-" as const,
         ]
       : []),
-    { label: "Toggle sidebar", shortcut: "Ctrl+B", action: sidebar.toggle },
+    { label: "Toggle sidebar", shortcut: "Ctrl+\\", action: toggleSidebar },
     { label: "Toggle theme", shortcut: "Ctrl+Shift+L", action: toggleTheme },
   ];
 }
@@ -734,7 +946,7 @@ document.addEventListener("contextmenu", (e) => {
   if (!(e.target as HTMLElement).closest(".cm-editor, input, textarea")) e.preventDefault();
 });
 
-$("btn-sidebar").addEventListener("click", () => sidebar.toggle());
+$("btn-sidebar").addEventListener("click", toggleSidebar);
 $("btn-open").addEventListener("click", () => void openDialog());
 $("btn-save").addEventListener("click", () => void saveDocument());
 $("btn-theme").addEventListener("click", toggleTheme);
@@ -790,10 +1002,15 @@ window.addEventListener(
       if (k === "n") handle(newFileInFolder);
       return;
     }
-    if (k === "o") handle(openDialog);
+    // In the editor, Ctrl+B is bold (see format.ts); elsewhere it toggles the sidebar.
+    const inEditor = !!(e.target as HTMLElement | null)?.closest?.(".cm-editor");
+    if (k === "o" && e.shiftKey) handle(showOutline);
+    else if (k === "f" && e.shiftKey) handle(searchFolder);
+    else if (k === "p" && !e.shiftKey) handle(quickOpen);
+    else if (k === "o") handle(openDialog);
     else if (k === "s") handle(() => saveDocument(e.shiftKey));
     else if (k === "n") handle(newDocument);
-    else if (k === "b") handle(sidebar.toggle);
+    else if (k === "\\" || (k === "b" && !e.shiftKey && !inEditor)) handle(toggleSidebar);
     else if (k === "e" && e.shiftKey) handle(exportPdf);
     else if (k === "1") handle(() => setMode("edit"));
     else if (k === "2") handle(() => setMode("split"));
@@ -828,7 +1045,10 @@ void appWindow.onCloseRequested(async (e) => {
 void getCurrentWebview().onDragDropEvent((e) => {
   if (e.payload.type === "over") workspace.classList.add("drop-target");
   else workspace.classList.remove("drop-target");
-  if (e.payload.type === "drop" && e.payload.paths.length > 0) void openPath(e.payload.paths[0]);
+  if (e.payload.type !== "drop" || e.payload.paths.length === 0) return;
+  const images = e.payload.paths.filter((p) => IMAGE_FILE.test(p));
+  if (images.length === e.payload.paths.length) linkImages(images);
+  else void openPath(e.payload.paths.find((p) => !IMAGE_FILE.test(p))!);
 });
 
 // A second launch (double-clicking another file) forwards its file here.
@@ -842,11 +1062,12 @@ void listen<string>("open-file", (e) => {
 applyTheme();
 setZoom(zoom);
 setMode(mode);
+showTab(tab);
 void refreshMaxGlyph();
 void loadEditors();
 
 const initial = await invoke<string | null>("initial_file");
 const lastFile = prefs.get<string | null>("lastFile", null);
 if (initial) await openPath(initial);
-else if (!(lastFile && (await openPath(lastFile, true)))) setDocument(WELCOME, null);
+else if (!(lastFile && (await openPath(lastFile, { quiet: true })))) setDocument(WELCOME, null);
 view.focus();

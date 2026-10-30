@@ -10,7 +10,7 @@
     <div id="app">
       <header id="titlebar" data-tauri-drag-region>
         <div class="tb-left" data-tauri-drag-region>
-          <button class="tb-btn" id="btn-sidebar" title="Toggle sidebar (Ctrl+B)"><span class="glyph">&#xE700;</span></button>
+          <button class="tb-btn" id="btn-sidebar" title="Toggle sidebar (Ctrl+\)"><span class="glyph">&#xE700;</span></button>
           <img class="tb-logo" src="/icon.svg" alt="" draggable="false" />
           <span id="doc-title" data-tauri-drag-region>Untitled</span>
           <span id="dirty-dot" title="Unsaved changes"></span>
@@ -38,19 +38,41 @@
       </header>
 
       <div id="body">
-      <aside id="sidebar" aria-label="Files">
-        <section class="sb-section" id="recent-section">
-          <div class="sb-head"><span>Recent</span></div>
-          <ul id="recent-list" class="sb-list"></ul>
-        </section>
-        <section class="sb-section sb-grow">
-          <div class="sb-head">
-            <span id="folder-name" title="">Folder</span>
-            <button class="sb-btn" id="btn-new-file" title="New file (Ctrl+Alt+N)"><span class="glyph">&#xE710;</span></button>
-            <button class="sb-btn" id="btn-open-folder" title="Open folder"><span class="glyph">&#xED25;</span></button>
+      <aside id="sidebar" aria-label="Sidebar">
+        <nav class="sb-tabs" role="tablist">
+          <button class="sb-tab" role="tab" data-tab="files" title="Files">Files</button>
+          <button class="sb-tab" role="tab" data-tab="outline" title="Outline (Ctrl+Shift+O)">Outline</button>
+          <button class="sb-tab" role="tab" data-tab="search" title="Search folder (Ctrl+Shift+F)">Search</button>
+        </nav>
+
+        <div class="sb-panel" data-panel="files" role="tabpanel">
+          <section class="sb-section" id="recent-section">
+            <div class="sb-head"><span>Recent</span></div>
+            <ul id="recent-list" class="sb-list"></ul>
+          </section>
+          <section class="sb-section sb-grow">
+            <div class="sb-head">
+              <span id="folder-name" title="">Folder</span>
+              <button class="sb-btn" id="btn-new-file" title="New file (Ctrl+Alt+N)"><span class="glyph">&#xE710;</span></button>
+              <button class="sb-btn" id="btn-open-folder" title="Open folder"><span class="glyph">&#xED25;</span></button>
+            </div>
+            <div id="tree" class="sb-list" role="tree"></div>
+          </section>
+        </div>
+
+        <div class="sb-panel" data-panel="outline" role="tabpanel" hidden>
+          <div id="outline" class="sb-list" role="tree"></div>
+        </div>
+
+        <div class="sb-panel" data-panel="search" role="tabpanel" hidden>
+          <div class="search-box">
+            <span class="glyph">&#xE721;</span>
+            <input id="search-input" type="text" placeholder="Search in folder" spellcheck="false" autocomplete="off" />
+            <button class="sb-btn" id="search-case" title="Match case" aria-pressed="false">Aa</button>
           </div>
-          <div id="tree" class="sb-list" role="tree"></div>
-        </section>
+          <div id="search-status" class="sb-empty"></div>
+          <div id="search-results" class="sb-list"></div>
+        </div>
       </aside>
 
       <main id="workspace" data-mode="split">

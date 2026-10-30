@@ -394,6 +394,9 @@ export function createSidebar(host: SidebarHost) {
     removeRecent,
     refresh,
     root: () => root,
+    recent: () => recent,
+    visible: () => !body.classList.contains("sidebar-hidden"),
+    show: () => setVisible(true),
     /** New file in the sidebar folder (or the open file's folder). */
     newFileHere: () => {
       const dir = root ?? (host.currentPath() ? dirName(host.currentPath()!) : null);

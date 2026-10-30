@@ -4,6 +4,7 @@
 mod markdown;
 mod pdf;
 mod shell;
+mod workspace;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,11 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 fn is_markdown(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     [".md", ".markdown", ".mdown", ".mkd"].iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Dotfiles and build/dependency folders, which the sidebar and search ignore.
+fn skipped(name: &str) -> bool {
+    name.starts_with('.') || matches!(name, "node_modules" | "target")
 }
 
 /// Render markdown to sanitized HTML. Runs off the main thread (async command)
@@ -87,7 +93,7 @@ async fn list_dir(path: PathBuf) -> Result<Vec<DirEntry>, String> {
         .filter_map(Result::ok)
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || matches!(name.as_str(), "node_modules" | "target") {
+            if skipped(&name) {
                 return None;
             }
             let dir = e.file_type().ok()?.is_dir();
@@ -165,7 +171,10 @@ fn main() {
             shell::open_terminal,
             shell::find_editors,
             shell::open_in_editor,
-            pdf::export_pdf
+            pdf::export_pdf,
+            workspace::list_markdown,
+            workspace::search_folder,
+            workspace::save_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running Inkwell");
