@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inkwell</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="titlebar" data-tauri-drag-region>
+        <div class="tb-left" data-tauri-drag-region>
+          <button class="tb-btn" id="btn-sidebar" title="Toggle sidebar (Ctrl+B)"><span class="glyph">&#xE700;</span></button>
+          <img class="tb-logo" src="/icon.svg" alt="" draggable="false" />
+          <span id="doc-title" data-tauri-drag-region>Untitled</span>
+          <span id="dirty-dot" title="Unsaved changes"></span>
+        </div>
+
+        <div class="tb-center" data-tauri-drag-region>
+          <div class="segmented" role="tablist" aria-label="View mode">
+            <button data-mode="edit" title="Editor only (Ctrl+1)">Edit</button>
+            <button data-mode="split" title="Side by side (Ctrl+2)">Split</button>
+            <button data-mode="preview" title="Preview only (Ctrl+3)">Preview</button>
+          </div>
+        </div>
+
+        <div class="tb-right">
+          <button class="tb-btn" id="btn-open" title="Open (Ctrl+O)"><span class="glyph">&#xE8E5;</span></button>
+          <button class="tb-btn" id="btn-save" title="Save (Ctrl+S)"><span class="glyph">&#xE74E;</span></button>
+          <button class="tb-btn" id="btn-theme" title="Toggle theme (Ctrl+Shift+L)"><span class="glyph" id="theme-glyph">&#xE793;</span></button>
+          <button class="tb-btn" id="btn-more" title="More"><span class="glyph">&#xE712;</span></button>
+          <div class="win-controls">
+            <button id="win-min" title="Minimize"><span class="glyph">&#xE921;</span></button>
+            <button id="win-max" title="Maximize"><span class="glyph" id="max-glyph">&#xE922;</span></button>
+            <button id="win-close" title="Close"><span class="glyph">&#xE8BB;</span></button>
+          </div>
+        </div>
+      </header>
+
+      <div id="body">
+      <aside id="sidebar" aria-label="Files">
+        <section class="sb-section" id="recent-section">
+          <div class="sb-head"><span>Recent</span></div>
+          <ul id="recent-list" class="sb-list"></ul>
+        </section>
+        <section class="sb-section sb-grow">
+          <div class="sb-head">
+            <span id="folder-name" title="">Folder</span>
+            <button class="sb-btn" id="btn-new-file" title="New file (Ctrl+Alt+N)"><span class="glyph">&#xE710;</span></button>
+            <button class="sb-btn" id="btn-open-folder" title="Open folder"><span class="glyph">&#xED25;</span></button>
+          </div>
+          <div id="tree" class="sb-list" role="tree"></div>
+        </section>
+      </aside>
+
+      <main id="workspace" data-mode="split">
+        <section id="editor-pane"></section>
+        <div id="splitter" role="separator" aria-orientation="vertical"></div>
+        <section id="preview-pane" tabindex="-1">
+          <article id="preview" class="markdown-body"></article>
+        </section>
+      </main>
+      </div>
+
+      <footer id="statusbar">
+        <span id="st-path"></span>
+        <span class="spacer"></span>
+        <span id="st-words"></span>
+        <span id="st-pos"></span>
+        <span id="st-eol"></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
