@@ -22,7 +22,7 @@ import { languages } from "@codemirror/language-data";
 import { syntaxHighlighting, indentOnInput, bracketMatching } from "@codemirror/language";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import hljs from "highlight.js/lib/common";
+
 import { editorTheme, markdownHighlight } from "./editor-theme";
 import { prefs, fileName, dirName, samePath, isInside, relativePath } from "./prefs";
 import { createSidebar } from "./sidebar";
@@ -36,7 +36,8 @@ import { createSearch } from "./search";
 import { fuzzy, openPalette, type PaletteItem } from "./palette";
 import { formatKeymap } from "./format";
 import { IMAGE_FILE, altText, linkTarget, pastedImage, saveImage } from "./images";
-import { enhance, RICH_LANGUAGES } from "./rich";
+import { enhance, RICH_LANGUAGES, within } from "./rich";
+import { patchBlocks, settle } from "./patch";
 import { showMenu, showMenuAt, type MenuItem } from "./menu";
 import { copy, editorItems, loadEditors, pathItems, reportError, run, toast } from "./actions";
 import { copyRich, previewHtml, selectionIn, standaloneHtml } from "./export";
@@ -194,7 +195,6 @@ function editorExtensions() {
       }
       if (u.selectionSet || u.docChanged) updateCursorStatus();
       if (u.selectionSet) queueSavePosition();
-      if (u.heightChanged || u.geometryChanged) pairs = null;
     }),
   ];
 }
@@ -322,11 +322,8 @@ async function reveal(at: At) {
 
 /** Scroll the preview to the block rendered from source line `line`. */
 function scrollPreviewTo(line: number) {
-  let target: HTMLElement | null = null;
-  for (const el of preview.querySelectorAll<HTMLElement>("[data-sourcepos]")) {
-    if (parseInt(el.dataset.sourcepos!, 10) > line) break;
-    target = el;
-  }
+  const B = getBlocks();
+  const target = B[lastAtOrBelow(B.length, (i) => B[i].line, line)]?.el;
   const offset = target ? target.getBoundingClientRect().top - previewPane.getBoundingClientRect().top - 16 : -Infinity;
   previewPane.scrollTop = Math.max(0, previewPane.scrollTop + offset);
 }
@@ -334,13 +331,10 @@ function scrollPreviewTo(line: number) {
 /** The source line at the top of whichever pane the reader is looking at. */
 function topLine(): number {
   if (mode === "preview") {
+    // Binary search, so only a handful of blocks are measured per scroll frame.
     const top = previewPane.getBoundingClientRect().top + 24;
-    let line = 1;
-    for (const el of preview.querySelectorAll<HTMLElement>("[data-sourcepos]")) {
-      if (el.getBoundingClientRect().top > top) break;
-      line = parseInt(el.dataset.sourcepos!, 10);
-    }
-    return line;
+    const B = getBlocks();
+    return B[lastAtOrBelow(B.length, (i) => B[i].el.getBoundingClientRect().top, top)]?.line ?? 1;
   }
   const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop - view.documentPadding.top + 24);
   return view.state.doc.lineAt(block.from).number;
@@ -414,15 +408,22 @@ let renderSeq = 0;
 let previewStale = true;
 /** While exporting, diagrams render in the light theme to match the printed page. */
 let exporting = false;
+/** How long the last render took, so big documents render less often while typing. */
+let lastRenderMs = 0;
+/** What the preview's blocks were rendered for; a change means rebuilding them all. */
+let renderedFor = "";
 
 function scheduleRender() {
   previewStale = true;
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => {
+  const run = () => {
     renderQueued = false;
     void render();
-  });
+  };
+  // Small documents render every frame; slow ones let keystrokes batch up.
+  if (lastRenderMs > 30) setTimeout(run, Math.min(400, lastRenderMs * 2));
+  else requestAnimationFrame(run);
 }
 
 /** Render the preview. `force` renders even when the preview is hidden (for export). */
@@ -433,28 +434,43 @@ async function render(force = false) {
   $("st-words").textContent = `${words.toLocaleString()} ${words === 1 ? "word" : "words"}`;
 
   if (mode === "edit" && !force) return; // rendered lazily when the preview is shown
+  const started = performance.now();
   const seq = ++renderSeq;
+  const isCurrent = () => seq === renderSeq;
   const html = await invoke<string>("render_markdown", { source: text });
-  if (seq !== renderSeq) return; // a newer render superseded this one
+  if (!isCurrent()) return; // a newer render superseded this one
 
-  preview.innerHTML = html;
+  // Diagrams are themed and images resolved per document: rebuild on a change.
+  const target = `${currentTheme()}|${doc.id}|${doc.path}`;
+  if (target !== renderedFor) {
+    preview.replaceChildren();
+    renderedFor = target;
+  }
+  const { start, inserted, keys } = patchBlocks(preview, html);
   previewStale = false;
-  resolveImages();
-  highlightCode();
-  pairs = null;
-  await enhance(preview, currentTheme(), () => seq === renderSeq);
-  if (seq !== renderSeq) return;
-  addCopyButtons();
-  pairs = null;
+  blocks = null;
+  resolveImages(inserted);
+  await highlightCode(inserted);
+  if (!isCurrent()) return;
+  await enhance(inserted, currentTheme(), isCurrent);
+  if (!isCurrent()) return;
+  addCopyButtons(inserted);
+  // Enhancing may have swapped a block for a new element (a diagram), so
+  // settle whatever now sits at each inserted position.
+  for (let i = 0; i < keys.length; i++) {
+    const el = preview.children[start + i];
+    if (el) settle(el, keys[i]);
+  }
+  lastRenderMs = performance.now() - started;
   if (pendingPreviewScroll !== null && mode === "preview") previewPane.scrollTop = pendingPreviewScroll;
   pendingPreviewScroll = null;
   if (mode === "split" && lastScrollSource === "editor") syncScroll("editor");
 }
 
-function resolveImages() {
+function resolveImages(roots: HTMLElement[]) {
   if (!doc.path) return;
   const base = dirName(doc.path);
-  for (const img of preview.querySelectorAll<HTMLImageElement>("img[src]")) {
+  for (const img of within<HTMLImageElement>(roots, "img[src]")) {
     const src = img.getAttribute("src")!;
     if (/^(https?:|data:|asset:)/i.test(src)) continue;
     const abs = /^([a-z]:[\\/]|[\\/]{2})/i.test(src) ? src : `${base}\\${src.replace(/^\.?[\\/]/, "")}`;
@@ -463,11 +479,19 @@ function resolveImages() {
 }
 
 const highlightCache = new Map<string, string>();
+type Hljs = typeof import("highlight.js/lib/common").default;
+let hljsLoad: Promise<Hljs> | null = null;
 
-function highlightCode() {
-  for (const code of preview.querySelectorAll<HTMLElement>("pre > code")) {
+/** Syntax-highlight code blocks. highlight.js loads on first use, not at startup. */
+async function highlightCode(roots: HTMLElement[]) {
+  const codes = within(roots, "pre > code").flatMap((code) => {
     const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice(9);
-    if (!lang || RICH_LANGUAGES.has(lang) || !hljs.getLanguage(lang)) continue;
+    return lang && !RICH_LANGUAGES.has(lang) ? [{ code, lang }] : [];
+  });
+  if (codes.length === 0) return;
+  const hljs = await (hljsLoad ??= import("highlight.js/lib/common").then((m) => m.default));
+  for (const { code, lang } of codes) {
+    if (!hljs.getLanguage(lang)) continue;
     const source = code.textContent ?? "";
     const key = `${lang}\0${source}`;
     let out = highlightCache.get(key);
@@ -481,9 +505,9 @@ function highlightCode() {
   }
 }
 
-function addCopyButtons() {
-  for (const pre of preview.querySelectorAll<HTMLElement>("pre")) {
-    if (!pre.querySelector(":scope > code")) continue;
+function addCopyButtons(roots: HTMLElement[]) {
+  for (const pre of within(roots, "pre")) {
+    if (!pre.isConnected || !pre.querySelector(":scope > code")) continue;
     const b = document.createElement("button");
     b.className = "code-copy";
     b.title = "Copy code";
@@ -492,71 +516,88 @@ function addCopyButtons() {
   }
 }
 
-// Images change preview height after load, which shifts every scroll anchor.
-preview.addEventListener("load", () => (pairs = null), true);
-
 // ---------------------------------------------------------------------------
 // Scroll sync
 //
-// Each preview block carries data-sourcepos from comrak. We pair the editor's
-// pixel offset for that source line with the block's offset in the preview,
-// then interpolate linearly between pairs in either direction.
+// Each preview block carries data-sourcepos from comrak. To map a scroll
+// position, find the two blocks on either side of it (binary search) and
+// interpolate between their offsets in the editor and the preview. Only
+// those few blocks are measured, so a render never triggers a pass over the
+// whole preview.
 
-type Pair = [editorY: number, previewY: number];
-let pairs: Pair[] | null = null;
+type Block = { el: HTMLElement; line: number };
+/** Preview blocks with increasing source lines; rebuilt (cheaply) after each render. */
+let blocks: Block[] | null = null;
 let lastScrollSource: "editor" | "preview" = "editor";
 const expected = { editor: -1, preview: -1 };
+/** Keep the block a little below the top edge rather than flush against it. */
+const SYNC_MARGIN = 24;
 
-function buildPairs(): Pair[] {
+function getBlocks(): Block[] {
+  if (blocks) return blocks;
+  const out: Block[] = [];
+  const lines = view.state.doc.lines;
+  let last = 0;
+  for (const el of preview.querySelectorAll<HTMLElement>("[data-sourcepos]")) {
+    const line = parseInt(el.dataset.sourcepos!, 10);
+    if (line > last && line <= lines) {
+      out.push({ el, line });
+      last = line;
+    }
+  }
+  return (blocks = out);
+}
+
+/** Last index in [0, n) whose value is <= y (or -1), for values that rise with the index. */
+function lastAtOrBelow(n: number, value: (i: number) => number, y: number) {
+  let lo = 0;
+  let hi = n - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (value(mid) <= y) {
+      found = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return found;
+}
+
+function mapScroll(y: number, from: "editor" | "preview"): number {
+  const B = getBlocks();
   const es = view.scrollDOM;
   const eMax = Math.max(0, es.scrollHeight - es.clientHeight);
   const pMax = Math.max(0, previewPane.scrollHeight - previewPane.clientHeight);
-  const pOrigin = previewPane.getBoundingClientRect().top - previewPane.scrollTop;
+  const origin = previewPane.getBoundingClientRect().top - previewPane.scrollTop;
   const padTop = view.documentPadding.top;
-  const lines = view.state.doc.lines;
-
-  const out: Pair[] = [[0, 0]];
-  let lastLine = 0;
-  for (const el of preview.querySelectorAll<HTMLElement>("[data-sourcepos]")) {
-    const line = parseInt(el.dataset.sourcepos!, 10);
-    if (!(line > lastLine) || line > lines) continue;
-    const e = view.lineBlockAt(view.state.doc.line(line).from).top + padTop - 24;
-    const p = el.getBoundingClientRect().top - pOrigin - 24;
-    const [le, lp] = out[out.length - 1];
-    if (e <= le || p <= lp) continue; // keep the mapping monotonic
-    if (e >= eMax || p >= pMax) break;
-    out.push([e, p]);
-    lastLine = line;
-  }
-  out.push([eMax, pMax]);
-  return out;
-}
-
-function mapScroll(y: number, from: 0 | 1): number {
-  const P = (pairs ??= buildPairs());
-  const to = from === 0 ? 1 : 0;
-  let lo = 1;
-  let hi = P.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (P[mid][from] < y) lo = mid + 1;
-    else hi = mid;
-  }
-  const a = P[lo - 1];
-  const b = P[lo];
-  const span = b[from] - a[from];
-  const t = span > 0 ? Math.min(1, Math.max(0, (y - a[from]) / span)) : 0;
-  return a[to] + (b[to] - a[to]) * t;
+  // A block that can't reach the top of either pane maps to the very end, so
+  // both panes arrive at their bottoms together.
+  const at = (i: number): [number, number] => {
+    if (i < 0) return [0, 0];
+    if (i >= B.length) return [eMax, pMax];
+    const e = view.lineBlockAt(view.state.doc.line(B[i].line).from).top + padTop - SYNC_MARGIN;
+    const p = B[i].el.getBoundingClientRect().top - origin - SYNC_MARGIN;
+    return e >= eMax || p >= pMax ? [eMax, pMax] : [e, p];
+  };
+  const side = from === "editor" ? 0 : 1;
+  const other = 1 - side;
+  const i = lastAtOrBelow(B.length, (k) => at(k)[side], y);
+  const a = at(i);
+  const b = at(i + 1);
+  const span = b[side] - a[side];
+  const t = span > 0 ? Math.min(1, Math.max(0, (y - a[side]) / span)) : 0;
+  const out = a[other] + (b[other] - a[other]) * t;
+  return Math.min(Math.max(0, out), from === "editor" ? pMax : eMax);
 }
 
 function syncScroll(source: "editor" | "preview") {
   if (mode !== "split") return;
   if (source === "editor") {
-    const y = Math.round(mapScroll(view.scrollDOM.scrollTop, 0));
+    const y = Math.round(mapScroll(view.scrollDOM.scrollTop, "editor"));
     expected.preview = y;
     previewPane.scrollTop = y;
   } else {
-    const y = Math.round(mapScroll(previewPane.scrollTop, 1));
+    const y = Math.round(mapScroll(previewPane.scrollTop, "preview"));
     expected.editor = y;
     view.scrollDOM.scrollTop = y;
   }
@@ -576,7 +617,6 @@ function onScroll(source: "editor" | "preview", el: HTMLElement) {
 
 view.scrollDOM.addEventListener("scroll", () => onScroll("editor", view.scrollDOM), { passive: true });
 previewPane.addEventListener("scroll", () => onScroll("preview", previewPane), { passive: true });
-new ResizeObserver(() => (pairs = null)).observe(workspace);
 
 // ---------------------------------------------------------------------------
 // View modes & splitter
@@ -590,7 +630,6 @@ function setMode(next: Mode) {
     b.classList.toggle("active", b.dataset.mode === next);
   }
   prefs.set("mode", next);
-  pairs = null;
   if (next !== "edit" && previewStale) scheduleRender();
   if (next === "preview") previewPane.focus();
   else view.focus();
@@ -618,7 +657,6 @@ splitter.addEventListener("pointerdown", (e) => {
     splitter.removeEventListener("pointermove", move);
     workspace.classList.remove("resizing");
     prefs.set("split", splitRatio);
-    pairs = null;
   };
   splitter.addEventListener("pointermove", move);
   splitter.addEventListener("pointerup", up, { once: true });
@@ -659,7 +697,6 @@ function setZoom(z: number) {
   zoom = Math.round(Math.min(2, Math.max(0.6, z)) * 10) / 10;
   document.documentElement.style.setProperty("--zoom", String(zoom));
   prefs.set("zoom", zoom);
-  pairs = null;
   view.requestMeasure();
 }
 

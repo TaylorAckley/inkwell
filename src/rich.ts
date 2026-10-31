@@ -1,9 +1,10 @@
 // Math (KaTeX) and diagrams (Mermaid) in the preview. Both libraries are
 // loaded on first use, so documents without them pay nothing at startup.
 //
-// Results are cached by source text: the preview is rebuilt on every
-// keystroke, and a cache hit is applied synchronously (before paint), so
-// unchanged diagrams and equations never flicker.
+// Only newly inserted preview blocks are enhanced (see patch.ts). Results
+// are also cached by source text, so a block that is re-created (an edit
+// inside it, a theme switch) gets its equations and diagrams back
+// synchronously, before paint, without flicker.
 
 type Katex = typeof import("katex").default;
 type Mermaid = typeof import("mermaid").default;
@@ -28,6 +29,11 @@ function loadMermaid() {
   return (mermaidLoad ??= import("mermaid").then((m) => m.default));
 }
 
+/** Elements matching `selector` in or under any of `roots`. */
+export function within<T extends Element = HTMLElement>(roots: Element[], selector: string): T[] {
+  return roots.flatMap((r) => [...(r.matches(selector) ? [r as T] : []), ...r.querySelectorAll<T & Element>(selector)]) as T[];
+}
+
 function remember(cache: Map<string, string>, key: string, value: string) {
   if (cache.size > 300) cache.clear();
   cache.set(key, value);
@@ -47,8 +53,8 @@ function replacePre(code: HTMLElement, className: string, html: string) {
   pre.replaceWith(div);
 }
 
-async function renderMath(root: HTMLElement, isCurrent: () => boolean) {
-  const nodes = [...root.querySelectorAll<HTMLElement>("[data-math-style]")];
+async function renderMath(roots: HTMLElement[], isCurrent: () => boolean) {
+  const nodes = within(roots, "[data-math-style]");
   if (nodes.length === 0) return;
   const katex = await loadKatex();
   if (!isCurrent()) return;
@@ -70,8 +76,8 @@ async function renderMath(root: HTMLElement, isCurrent: () => boolean) {
   }
 }
 
-async function renderDiagrams(root: HTMLElement, theme: "light" | "dark", isCurrent: () => boolean) {
-  const blocks = [...root.querySelectorAll<HTMLElement>("pre > code.language-mermaid")];
+async function renderDiagrams(roots: HTMLElement[], theme: "light" | "dark", isCurrent: () => boolean) {
+  const blocks = within(roots, "pre > code.language-mermaid");
   if (blocks.length === 0) return;
   const mermaid = await loadMermaid();
   if (mermaidTheme !== theme) {
@@ -100,9 +106,9 @@ async function renderDiagrams(root: HTMLElement, theme: "light" | "dark", isCurr
   }
 }
 
-/** Upgrade math and mermaid blocks in place. Resolves once the layout is final. */
-export async function enhance(root: HTMLElement, theme: "light" | "dark", isCurrent: () => boolean) {
-  await Promise.all([renderMath(root, isCurrent), renderDiagrams(root, theme, isCurrent)]);
+/** Upgrade math and mermaid in these blocks, in place. Resolves once the layout is final. */
+export async function enhance(roots: HTMLElement[], theme: "light" | "dark", isCurrent: () => boolean) {
+  await Promise.all([renderMath(roots, isCurrent), renderDiagrams(roots, theme, isCurrent)]);
 }
 
 /** Languages handled here rather than by the syntax highlighter. */

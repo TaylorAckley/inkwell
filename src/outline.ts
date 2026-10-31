@@ -1,5 +1,5 @@
 import type { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 
 export type Heading = { level: number; text: string; line: number };
 
@@ -12,9 +12,13 @@ function plain(text: string) {
     .trim();
 }
 
-/** Headings from the markdown syntax tree, so `#` lines inside code blocks don't count. */
+/**
+ * Headings from the markdown syntax tree, so `#` lines inside code blocks
+ * don't count. Uses whatever the editor has parsed so far rather than
+ * forcing a full parse, which could stall typing in a very large document.
+ */
 export function headings(state: EditorState): Heading[] {
-  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
+  const tree = syntaxTree(state);
   const out: Heading[] = [];
   tree.iterate({
     enter(node) {
@@ -41,10 +45,17 @@ export type OutlineHost = {
 export function createOutline(el: HTMLElement, host: OutlineHost) {
   let items: Heading[] = [];
   let current = -1;
+  let retry = 0;
+  let retries = 0;
 
   function render() {
-    items = headings(host.state());
+    const state = host.state();
+    items = headings(state);
     current = -1;
+    // The editor parses large documents in the background; pick up the rest when it has.
+    clearTimeout(retry);
+    if (syntaxTreeAvailable(state, state.doc.length)) retries = 0;
+    else if (retries++ < 20) retry = window.setTimeout(render, 300);
     if (items.length === 0) {
       el.replaceChildren(Object.assign(document.createElement("div"), { className: "sb-empty", textContent: "No headings" }));
       return;
