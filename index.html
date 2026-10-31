@@ -43,6 +43,7 @@
           <button class="sb-tab" role="tab" data-tab="files" title="Files">Files</button>
           <button class="sb-tab" role="tab" data-tab="outline" title="Outline (Ctrl+Shift+O)">Outline</button>
           <button class="sb-tab" role="tab" data-tab="search" title="Search folder (Ctrl+Shift+F)">Search</button>
+          <button class="sb-tab" role="tab" data-tab="ask" title="Ask Claude (Ctrl+Shift+J)">Ask</button>
         </nav>
 
         <div class="sb-panel" data-panel="files" role="tabpanel">
@@ -72,6 +73,18 @@
           </div>
           <div id="search-status" class="sb-empty"></div>
           <div id="search-results" class="sb-list"></div>
+        </div>
+
+        <div class="sb-panel" data-panel="ask" role="tabpanel" hidden>
+          <div id="ask-log" class="ask-log markdown-body"></div>
+          <div class="ask-box">
+            <textarea id="ask-input" rows="3" placeholder="Ask about this document…" spellcheck="true"></textarea>
+            <div class="ask-actions">
+              <span id="ask-model"></span>
+              <button class="btn" id="ask-new" title="Start a new conversation">New</button>
+              <button class="btn primary" id="ask-send" title="Send (Enter)">Send</button>
+            </div>
+          </div>
         </div>
       </aside>
 

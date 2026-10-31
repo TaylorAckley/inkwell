@@ -1,6 +1,7 @@
 // Hide the console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod markdown;
 mod pdf;
 mod shell;
@@ -116,11 +117,22 @@ fn initial_file() -> Option<String> {
     std::env::args().skip(1).find(|a| !a.starts_with('-'))
 }
 
+/// `inkwell --html-to-pdf <in.html> <out.pdf>`: print a page and exit, with
+/// exit code 0 on success. Uses the same path as the in-app PDF export.
+fn html_to_pdf_args() -> Option<(String, String)> {
+    let args: Vec<String> = std::env::args().collect();
+    let i = args.iter().position(|a| a == "--html-to-pdf")?;
+    Some((args.get(i + 1)?.clone(), args.get(i + 2)?.clone()))
+}
+
 fn main() {
-    tauri::Builder::default()
+    let print_job = html_to_pdf_args();
+    let headless = print_job.is_some();
+    let mut builder = tauri::Builder::default();
+    if print_job.is_none() {
         // Must be registered first. A second launch (e.g. double-clicking
         // another .md file) hands its file to this window and exits.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
@@ -128,11 +140,35 @@ fn main() {
             if let Some(path) = argv.iter().skip(1).find(|a| !a.starts_with('-')) {
                 let _ = app.emit("open-file", path.clone());
             }
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Watched::default())
-        .setup(|app| {
+        .manage(ai::Requests::default())
+        .setup(move |app| {
+            if let Some((input, output)) = print_job.clone() {
+                // Headless: no editor window, so nothing touches the user's session.
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.destroy();
+                }
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = match fs::read_to_string(&input) {
+                        Ok(html) => {
+                            let base = Path::new(&input).parent().map(|p| p.display().to_string());
+                            pdf::print_html(&handle, &html, base.as_deref(), output).await
+                        }
+                        Err(e) => Err(e.to_string()),
+                    };
+                    if let Err(e) = &result {
+                        eprintln!("{e}");
+                    }
+                    handle.exit(if result.is_ok() { 0 } else { 1 });
+                });
+                return Ok(());
+            }
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(700));
@@ -171,10 +207,25 @@ fn main() {
             shell::find_editors,
             shell::open_in_editor,
             pdf::export_pdf,
+            pdf::export_html_pdf,
+            ai::ai_set_key,
+            ai::ai_has_key,
+            ai::ai_clear_key,
+            ai::ai_stream,
+            ai::ai_cancel,
             workspace::list_markdown,
             workspace::search_folder,
             workspace::save_image
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Inkwell");
+        .build(tauri::generate_context!())
+        .expect("error while running Inkwell")
+        .run(move |_app, event| {
+            // A print job closes the editor window at once; stay alive until
+            // the job calls exit itself (which passes an exit code).
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                if headless {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

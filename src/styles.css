@@ -1455,3 +1455,399 @@ button {
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------------
+   Claude: buttons, dialogs, the suggestion card, the Ask panel, the designer
+   ------------------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--pane);
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.btn:disabled {
+  opacity: 0.45;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+.btn.danger {
+  color: #e5484d;
+}
+.btn kbd {
+  font: 10.5px var(--font-ui);
+  opacity: 0.7;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.32);
+  animation: fade-in 0.12s ease-out;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.modal {
+  width: min(500px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  border-radius: 12px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+.modal-wide {
+  width: min(1100px, calc(100vw - 48px));
+}
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px;
+  user-select: text;
+}
+.modal-body h2 {
+  margin: 0;
+  font: 600 17px var(--font-display);
+  color: var(--heading);
+}
+.modal-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.modal-note a {
+  color: var(--accent);
+}
+.modal-error {
+  font-size: 12.5px;
+  color: #e5484d;
+  white-space: pre-wrap;
+}
+.modal-error:empty {
+  display: none;
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-actions .spacer {
+  flex: 1;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field > span {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 7px 10px;
+  font: 13px var(--font-ui);
+  color: var(--fg);
+  background: var(--pane);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  outline: none;
+  resize: vertical;
+}
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--accent);
+}
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.model-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.model-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--selection);
+}
+.model-option input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.model-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
+.model-option small {
+  color: var(--muted);
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 12.5px;
+}
+.chip:hover {
+  background: var(--hover);
+}
+.chip.on {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* Suggestion card under the selection */
+.ai-card {
+  position: fixed;
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(24px) saturate(1.4);
+  animation: menu-in 0.1s ease-out;
+  overflow: hidden;
+}
+.ai-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.ai-card-head .glyph {
+  color: var(--accent);
+}
+.ai-card-head small {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--muted);
+}
+.ai-card-body {
+  min-height: 40px;
+  margin: 8px 12px;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--pane);
+  font: 13px/1.55 var(--font-mono);
+  white-space: pre-wrap;
+  user-select: text;
+}
+.ai-card-body.working:empty::before,
+.ask-msg.working:empty::before {
+  content: "Thinking…";
+  color: var(--muted);
+  font-family: var(--font-ui);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+.ai-card-body.error,
+.ask-msg.error {
+  color: #e5484d;
+  font-family: var(--font-ui);
+}
+.ai-card-foot {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.ai-card-foot .btn:last-child {
+  margin-left: auto;
+}
+.ai-card-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 14px;
+  font: 13px var(--font-ui);
+  color: var(--fg);
+  background: none;
+  border: 0;
+  outline: none;
+}
+
+/* Ask panel */
+#body.sidebar-wide {
+  --sidebar-w: 360px;
+}
+.ask-log,
+.ask-log.markdown-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  max-width: none;
+  padding: 2px 6px 8px 2px;
+  font-size: 13px;
+  user-select: text;
+}
+.ask-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 4px;
+}
+.ask-empty p {
+  margin: 0 0 4px;
+  color: var(--muted);
+}
+.ask-chip {
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 12px;
+  text-align: left;
+}
+.ask-chip:hover {
+  background: var(--hover);
+}
+.ask-msg {
+  margin: 8px 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.ask-msg.user {
+  margin-left: 28px;
+  padding: 8px 11px;
+  border-radius: 10px 10px 2px 10px;
+  background: var(--selection);
+  color: var(--heading);
+  white-space: pre-wrap;
+}
+.ask-msg.assistant > :first-child {
+  margin-top: 0;
+}
+.ask-msg.assistant pre {
+  font-size: 12px;
+}
+.ask-tools {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.ask-tools button {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.ask-tools button:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.ask-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 2px 0 0;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--pane);
+}
+.ask-box:focus-within {
+  border-color: var(--accent);
+}
+.ask-box textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 200px;
+  padding: 0;
+  font: 13px/1.45 var(--font-ui);
+  color: var(--fg);
+  background: none;
+  border: 0;
+  outline: none;
+  resize: vertical;
+  user-select: text;
+}
+.ask-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ask-actions .btn {
+  height: 26px;
+  padding: 0 10px;
+}
+#ask-model {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Page designer */
+.design.previewing {
+  height: min(820px, calc(100vh - 64px));
+}
+.design-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+.progress-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) 0 0 / 40% 100% no-repeat, var(--border);
+  animation: progress 1.4s linear infinite;
+}
+@keyframes progress {
+  from {
+    background-position: -40% 0, 0 0;
+  }
+  to {
+    background-position: 140% 0, 0 0;
+  }
+}

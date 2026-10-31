@@ -27,6 +27,10 @@ import { editorTheme, markdownHighlight } from "./editor-theme";
 import { prefs, fileName, dirName, samePath, isInside, relativePath } from "./prefs";
 import { createSidebar } from "./sidebar";
 import { createTabStrip } from "./tabs";
+import { openSettings } from "./ai";
+import { createAiEdit } from "./aiedit";
+import { createAsk } from "./ask";
+import { createDesign } from "./design";
 import { createOutline } from "./outline";
 import { createSearch } from "./search";
 import { fuzzy, openPalette, type PaletteItem } from "./palette";
@@ -40,7 +44,7 @@ import { WELCOME } from "./welcome";
 
 type Mode = "edit" | "split" | "preview";
 type Theme = "light" | "dark";
-type Panel = "files" | "outline" | "search";
+type Panel = "files" | "outline" | "search" | "ask";
 /** A place in the document: 1-based line, plus an optional UTF-16 column and selection length. */
 type At = { line: number; col?: number; len?: number };
 
@@ -239,6 +243,7 @@ async function activate(d: Doc, at?: At): Promise<boolean> {
   doc.state = view.state;
   doc.scroll = { editor: view.scrollDOM.scrollTop, preview: previewPane.scrollTop };
 
+  aiEdit.close(); // a pending suggestion belongs to the outgoing document
   doc = d;
   if (!cycle) touchMru(d);
   view.setState(d.state!);
@@ -950,6 +955,8 @@ function showPanel(next: Panel) {
     b.setAttribute("aria-selected", String(b.dataset.tab === next));
   }
   for (const p of document.querySelectorAll<HTMLElement>(".sb-panel")) p.hidden = p.dataset.panel !== next;
+  // A conversation needs more room than a file list.
+  $("body").classList.toggle("sidebar-wide", next === "ask");
   if (outlineShown()) outline.render();
 }
 
@@ -988,6 +995,41 @@ function searchFolder() {
   const sel = view.state.selection.main;
   search.focus(view.hasFocus ? view.state.sliceDoc(sel.from, sel.to) : undefined);
 }
+
+// ---------------------------------------------------------------------------
+// Claude: Ctrl+J edits, the Ask panel and the page designer
+
+const selectedText = () => {
+  const sel = view.state.selection.main;
+  return view.state.sliceDoc(sel.from, sel.to);
+};
+
+const askPanel = createAsk({
+  docText: () => view.state.doc.toString(),
+  docName: () => fileName(doc.path).replace(/"/g, "'"),
+  selection: selectedText,
+  insert: (text) => {
+    view.dispatch(view.state.replaceSelection(text), { scrollIntoView: true, userEvent: "input.ai" });
+    view.focus();
+  },
+});
+
+function showAsk(question?: string) {
+  sidebar.show();
+  showPanel("ask");
+  askPanel.focus(question);
+}
+
+const aiEdit = createAiEdit({
+  view: () => view,
+  docName: () => fileName(doc.path).replace(/"/g, "'"),
+  ask: (question) => showAsk(question),
+});
+
+const design = createDesign({
+  docText: () => view.state.doc.toString(),
+  docPath: () => doc.path,
+});
 
 // ---------------------------------------------------------------------------
 // Quick open (Ctrl+P): fuzzy-find any markdown file in the folder
@@ -1210,6 +1252,11 @@ function moreMenu(): MenuItem[] {
     { label: "Search in folder", shortcut: "Ctrl+Shift+F", action: searchFolder },
     { label: "Outline", shortcut: "Ctrl+Shift+O", action: showOutline },
     "-",
+    { label: "Edit selection with Claude", shortcut: "Ctrl+J", action: () => aiEdit.open() },
+    { label: "Ask Claude about this document", shortcut: "Ctrl+Shift+J", action: () => showAsk() },
+    { label: "Design a page with Claude…", action: () => design.open() },
+    { label: "AI settings…", action: () => openSettings() },
+    "-",
     { label: "Save", shortcut: "Ctrl+S", action: () => saveDocument() },
     { label: "Save as…", shortcut: "Ctrl+Shift+S", action: () => saveDocument(true) },
     "-",
@@ -1314,6 +1361,8 @@ window.addEventListener(
     else if (k === "pageup") handle(() => stepTab(-1));
     else if (k === "w" && !e.shiftKey) handle(() => closeDoc(doc));
     else if (k === "t" && e.shiftKey) handle(reopenClosed);
+    else if (k === "j" && e.shiftKey) handle(() => showAsk());
+    else if (k === "j") handle(() => aiEdit.open());
     else if (k === "o" && e.shiftKey) handle(showOutline);
     else if (k === "f" && e.shiftKey) handle(searchFolder);
     else if (k === "p" && !e.shiftKey) handle(quickOpen);
