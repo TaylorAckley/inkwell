@@ -708,8 +708,129 @@ button {
    Workspace
    ------------------------------------------------------------------------ */
 
-#workspace {
+#main {
   grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------------
+   Tabs
+   ------------------------------------------------------------------------ */
+
+#tabbar {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  height: 36px;
+  padding: 0 6px 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+#tabbar[hidden] {
+  display: none;
+}
+#tabbar::-webkit-scrollbar {
+  display: none;
+}
+#body.sidebar-hidden #tabbar,
+:root.maximized #tabbar {
+  padding-left: 6px;
+}
+.tab {
+  position: relative;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 96px;
+  max-width: 220px;
+  height: 32px;
+  padding: 0 5px 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tab:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.tab.active {
+  background: var(--pane);
+  border-color: var(--border);
+  color: var(--heading);
+}
+.tab.active::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.tab.dragging {
+  z-index: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.tab.preview .tab-name {
+  font-style: italic;
+}
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-hint {
+  flex-shrink: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tab-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: 4px;
+  color: var(--muted);
+  opacity: 0;
+}
+.tab-close .glyph {
+  font-size: 9px;
+}
+.tab:hover .tab-close,
+.tab.active .tab-close,
+.tab.dirty .tab-close {
+  opacity: 1;
+}
+.tab-close:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+/* Unsaved: a dot in place of the ×, which comes back on hover. */
+.tab.dirty .tab-close:not(:hover) .glyph {
+  display: none;
+}
+.tab.dirty .tab-close:not(:hover)::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+#workspace {
+  flex: 1;
   display: grid;
   grid-template-columns: var(--split) 1px 1fr;
   min-height: 0;
@@ -1293,6 +1414,7 @@ button {
   body,
   #app,
   #body,
+  #main,
   #workspace,
   #preview-pane {
     display: block !important;
@@ -1304,6 +1426,7 @@ button {
   }
   #titlebar,
   #sidebar,
+  #tabbar,
   #editor-pane,
   #splitter,
   #statusbar,

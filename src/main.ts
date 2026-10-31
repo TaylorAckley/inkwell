@@ -26,6 +26,7 @@ import hljs from "highlight.js/lib/common";
 import { editorTheme, markdownHighlight } from "./editor-theme";
 import { prefs, fileName, dirName, samePath, isInside, relativePath } from "./prefs";
 import { createSidebar } from "./sidebar";
+import { createTabStrip } from "./tabs";
 import { createOutline } from "./outline";
 import { createSearch } from "./search";
 import { fuzzy, openPalette, type PaletteItem } from "./palette";
@@ -39,7 +40,7 @@ import { WELCOME } from "./welcome";
 
 type Mode = "edit" | "split" | "preview";
 type Theme = "light" | "dark";
-type Tab = "files" | "outline" | "search";
+type Panel = "files" | "outline" | "search";
 /** A place in the document: 1-based line, plus an optional UTF-16 column and selection length. */
 type At = { line: number; col?: number; len?: number };
 
@@ -53,17 +54,55 @@ const preview = $("preview");
 const splitter = $("splitter");
 
 // ---------------------------------------------------------------------------
-// Document state
+// Documents: one per tab
+//
+// There is a single editor view. The active document's state lives in it;
+// background documents keep their EditorState (text, undo history, cursor),
+// so switching tabs is a state swap. Restored tabs have no state until they
+// are first shown, so a long session costs nothing at startup.
 
-const doc = {
-  path: null as string | null,
-  savedText: "",
-  dirty: false,
-  crlf: false,
+type Doc = {
+  id: number;
+  path: string | null;
+  /** Null until first shown. Stale for the active document: the view holds its state. */
+  state: EditorState | null;
+  savedText: string;
+  dirty: boolean;
+  crlf: boolean;
+  /** Temporary tab: the next file opened with a single click replaces it. */
+  preview: boolean;
+  scroll: { editor: number; preview: number } | null;
 };
+
+let docs: Doc[] = [];
+/** Most recently used first, for Ctrl+Tab and for choosing the tab to show after a close. */
+let mru: Doc[] = [];
+let nextDocId = 1;
+/** Paths of closed tabs, most recent last, for Ctrl+Shift+T. */
+const closedPaths: string[] = [];
 
 /** Never equal to real text, so a document whose file was deleted stays dirty. */
 const ORPHANED = "\u0000orphaned";
+
+function makeDoc(path: string | null, preview = false): Doc {
+  return { id: nextDocId++, path, state: null, savedText: "", dirty: false, crlf: false, preview, scroll: null };
+}
+
+/** Placeholder until the first real document is shown; never in `docs`. */
+let doc: Doc = makeDoc(null);
+
+function loadText(d: Doc, text: string) {
+  d.crlf = text.includes("\r\n");
+  d.savedText = d.crlf ? text.replace(/\r\n/g, "\n") : text;
+  d.dirty = false;
+  // A fresh state also starts a fresh undo history.
+  d.state = EditorState.create({ doc: d.savedText, extensions: editorExtensions() });
+}
+
+/** A document's current state, whether it's showing or in the background. */
+function stateOf(d: Doc): EditorState | null {
+  return d === doc ? view.state : d.state;
+}
 
 function updateTitle() {
   const name = fileName(doc.path);
@@ -78,7 +117,9 @@ function refreshDirty(text: string) {
   const dirty = text.length !== doc.savedText.length || text !== doc.savedText;
   if (dirty !== doc.dirty) {
     doc.dirty = dirty;
+    if (dirty) doc.preview = false; // editing keeps a preview tab
     updateTitle();
+    renderTabs();
   }
 }
 
@@ -159,28 +200,107 @@ const view = new EditorView({
   state: EditorState.create({ doc: "", extensions: editorExtensions() }),
 });
 
-/** Replace the document. `at` jumps to a place instead of restoring the last position. */
-function setDocument(text: string, path: string | null, at?: At) {
-  savePosition(); // for the document being replaced
-  doc.crlf = text.includes("\r\n");
-  const normalized = doc.crlf ? text.replace(/\r\n/g, "\n") : text;
-  doc.path = path;
-  doc.savedText = normalized;
-  doc.dirty = false;
-  // A fresh state also resets undo history, which is what you want on open.
-  view.setState(EditorState.create({ doc: normalized, extensions: editorExtensions() }));
+/** Preview scroll to restore once the incoming tab's preview has rendered. */
+let pendingPreviewScroll: number | null = null;
+
+/**
+ * Show a document. Loads it first if it has never been shown; a file that
+ * can no longer be read closes its tab. `at` jumps to a place instead of
+ * restoring where the document was left.
+ */
+let activateSeq = 0;
+
+async function activate(d: Doc, at?: At): Promise<boolean> {
+  const seq = ++activateSeq;
+  if (!d.state) {
+    if (!d.path) loadText(d, "");
+    else {
+      try {
+        loadText(d, await invoke<string>("read_file", { path: d.path }));
+      } catch {
+        if (docs.includes(d)) {
+          toast(`Couldn't open ${fileName(d.path)}`);
+          sidebar.removeRecent(d.path);
+          removeDoc(d);
+        }
+        return false;
+      }
+    }
+  }
+  if (!docs.includes(d)) return false; // closed while loading
+  if (seq !== activateSeq) return false; // another tab was chosen while this one loaded
+  if (d === doc) {
+    if (at) void reveal(at);
+    return true;
+  }
+
+  // Park the outgoing document.
+  savePosition();
+  doc.state = view.state;
+  doc.scroll = { editor: view.scrollDOM.scrollTop, preview: previewPane.scrollTop };
+
+  doc = d;
+  if (!cycle) touchMru(d);
+  view.setState(d.state!);
   view.scrollDOM.scrollTop = 0;
   previewPane.scrollTop = 0;
+  pendingPreviewScroll = null;
   if (at) void reveal(at);
-  else if (path) restorePosition(path);
-  prefs.set("lastFile", path);
+  else if (d.scroll) {
+    const { editor, preview: previewTop } = d.scroll;
+    lastScrollSource = mode === "preview" ? "preview" : "editor";
+    pendingPreviewScroll = previewTop;
+    requestAnimationFrame(() => (view.scrollDOM.scrollTop = editor));
+  } else if (d.path) restorePosition(d.path);
+
   updateTitle();
   updateCursorStatus();
   scheduleRender();
   queueOutline();
-  void invoke("watch_file", { path });
-  sidebar.setActive(path);
+  sidebar.setActive(d.path);
+  documentsChanged();
+  return true;
 }
+
+function touchMru(d: Doc) {
+  mru = [d, ...mru.filter((x) => x !== d)];
+}
+
+/** Tab strip, file watcher and saved session all follow the set of open documents. */
+function documentsChanged() {
+  renderTabs();
+  void invoke("watch_files", { paths: docs.filter((d) => d.path && d.state).map((d) => d.path) });
+  prefs.set("session", { tabs: docs.filter((d) => d.path).map((d) => d.path), active: doc.path });
+}
+
+/** Add a document after the active tab, or in place of `replace`. */
+function insertDoc(d: Doc, replace: Doc | null) {
+  const i = replace ? docs.indexOf(replace) : -1;
+  if (i >= 0) {
+    docs[i] = d;
+    mru = mru.filter((x) => x !== replace);
+  } else {
+    docs.splice(docs.indexOf(doc) + 1, 0, d);
+  }
+}
+
+/** Drop a document without asking, showing another if it was active. */
+function removeDoc(d: Doc) {
+  const i = docs.indexOf(d);
+  if (i < 0) return;
+  docs.splice(i, 1);
+  mru = mru.filter((x) => x !== d);
+  if (d.path) {
+    closedPaths.push(d.path);
+    if (closedPaths.length > 30) closedPaths.shift();
+  }
+  if (docs.length === 0) docs.push(makeDoc(null));
+  if (d === doc) void activate(mru[0] ?? docs[Math.min(i, docs.length - 1)]);
+  else documentsChanged();
+}
+
+/** An untitled, unedited document (like the welcome page) has nothing to lose. */
+const disposable = (d: Doc) => !d.path && !d.dirty;
 
 /** Select a place in the document and scroll it to the top of the editor (or preview). */
 async function reveal(at: At) {
@@ -221,11 +341,16 @@ function topLine(): number {
   return view.state.doc.lineAt(block.from).number;
 }
 
-/** Bring in an external edit as a minimal change, so scroll position, cursor and undo history survive. */
-function applyExternalText(text: string) {
-  doc.crlf = text.includes("\r\n");
-  const next = doc.crlf ? text.replace(/\r\n/g, "\n") : text;
-  const cur = view.state.doc.toString();
+/**
+ * Bring in an external edit as a minimal change, so scroll position, cursor
+ * and undo history survive. Works for background tabs too.
+ */
+function applyExternalText(d: Doc, text: string) {
+  const state = stateOf(d);
+  if (!state) return;
+  d.crlf = text.includes("\r\n");
+  const next = d.crlf ? text.replace(/\r\n/g, "\n") : text;
+  const cur = state.doc.toString();
   let start = 0;
   const max = Math.min(cur.length, next.length);
   while (start < max && cur.charCodeAt(start) === next.charCodeAt(start)) start++;
@@ -235,32 +360,36 @@ function applyExternalText(text: string) {
     endCur--;
     endNext--;
   }
-  doc.savedText = next;
-  doc.dirty = false;
+  d.savedText = next;
+  d.dirty = false;
   if (start !== endCur || start !== endNext) {
-    view.dispatch({ changes: { from: start, to: endCur, insert: next.slice(start, endNext) } });
+    const changes = { from: start, to: endCur, insert: next.slice(start, endNext) };
+    if (d === doc) view.dispatch({ changes });
+    else d.state = state.update({ changes }).state;
   }
-  updateTitle();
+  if (d === doc) updateTitle();
+  renderTabs();
 }
 
-let externalPrompt = false;
+const externalPrompts = new Set<number>();
 void listen<string>("file-changed", async (e) => {
-  if (!samePath(e.payload, doc.path) || externalPrompt) return;
-  const path = doc.path!;
-  if (doc.dirty) {
-    externalPrompt = true;
+  const d = docs.find((x) => samePath(x.path, e.payload));
+  if (!d || !d.state || externalPrompts.has(d.id)) return;
+  const path = d.path!;
+  if (d.dirty) {
+    externalPrompts.add(d.id);
     const reload = await ask(`${fileName(path)} changed on disk. Reload it and lose your unsaved changes?`, {
       title: "Inkwell",
       kind: "warning",
       okLabel: "Reload",
       cancelLabel: "Keep mine",
     });
-    externalPrompt = false;
+    externalPrompts.delete(d.id);
     if (!reload) return;
   }
   try {
     const text = await invoke<string>("read_file", { path });
-    if (samePath(path, doc.path)) applyExternalText(text);
+    if (docs.includes(d) && samePath(path, d.path)) applyExternalText(d, text);
   } catch {
     /* deleted or locked mid-write; the next change event will retry */
   }
@@ -312,6 +441,8 @@ async function render(force = false) {
   if (seq !== renderSeq) return;
   addCopyButtons();
   pairs = null;
+  if (pendingPreviewScroll !== null && mode === "preview") previewPane.scrollTop = pendingPreviewScroll;
+  pendingPreviewScroll = null;
   if (mode === "split" && lastScrollSource === "editor") syncScroll("editor");
 }
 
@@ -530,25 +661,69 @@ function setZoom(z: number) {
 // ---------------------------------------------------------------------------
 // File operations
 
-async function confirmDiscard(): Promise<boolean> {
-  if (!doc.dirty) return true;
-  return ask(`Discard unsaved changes to ${fileName(doc.path)}?`, {
-    title: "Inkwell",
-    kind: "warning",
-    okLabel: "Discard",
-    cancelLabel: "Cancel",
-  });
-}
-
-async function openPath(path: string, opts: { quiet?: boolean; at?: At } = {}) {
-  if (!(await confirmDiscard())) return false;
+/**
+ * Open a file in a tab, or switch to it if it's already open. `preview`
+ * opens it in the temporary tab (for single clicks), replacing whatever the
+ * temporary tab showed.
+ */
+async function openPath(path: string, opts: { quiet?: boolean; at?: At; preview?: boolean } = {}) {
+  const existing = docs.find((d) => samePath(d.path, path));
+  if (existing) {
+    if (!opts.preview && existing.preview) {
+      existing.preview = false;
+      renderTabs();
+    }
+    return activate(existing, opts.at);
+  }
+  let text: string;
   try {
-    setDocument(await invoke<string>("read_file", { path }), path, opts.at);
-    return true;
+    text = await invoke<string>("read_file", { path });
   } catch (err) {
     sidebar.removeRecent(path);
     if (!opts.quiet) await message(String(err), { title: "Inkwell", kind: "error" });
     return false;
+  }
+  if (docs.some((d) => samePath(d.path, path))) return openPath(path, opts); // opened meanwhile
+  const d = makeDoc(path, !!opts.preview);
+  loadText(d, text);
+  const replace = (opts.preview && docs.find((x) => x.preview && !x.dirty)) || (disposable(doc) && docs.includes(doc) ? doc : null);
+  insertDoc(d, replace);
+  return activate(d, opts.at);
+}
+
+/** Save/Don't save/Cancel for one document. True when it's fine to let it go. */
+async function confirmClose(d: Doc): Promise<boolean> {
+  if (!d.dirty) return true;
+  if (d !== doc) await activate(d); // show what's being asked about
+  const choice = await message(`Save changes to ${fileName(d.path)}?`, {
+    title: "Inkwell",
+    kind: "warning",
+    buttons: { yes: "Save", no: "Don't save", cancel: "Cancel" },
+  });
+  if (choice === "Save" || choice === "Yes") return saveDoc(d);
+  return choice === "Don't save" || choice === "No";
+}
+
+async function closeDoc(d: Doc) {
+  if (await confirmClose(d)) {
+    if (d === doc) savePosition();
+    removeDoc(d);
+  }
+}
+
+/** Close several tabs, stopping if the user cancels one. */
+async function closeDocs(list: Doc[]) {
+  for (const d of list) {
+    if (!docs.includes(d)) continue;
+    if (!(await confirmClose(d))) return;
+    removeDoc(d);
+  }
+}
+
+async function reopenClosed() {
+  while (closedPaths.length) {
+    const path = closedPaths.pop()!;
+    if (!docs.some((d) => samePath(d.path, path)) && (await openPath(path, { quiet: true }))) return;
   }
 }
 
@@ -565,70 +740,194 @@ async function openDialog() {
   if (typeof path === "string") await openPath(path);
 }
 
-async function saveDocument(saveAs = false): Promise<boolean> {
-  let path = doc.path;
+/** Save a document (asking where, if it's new or `saveAs`). False if cancelled or failed. */
+async function saveDoc(d: Doc, saveAs = false): Promise<boolean> {
+  const state = stateOf(d);
+  if (!state) return true; // never shown, so never edited
+  let path = d.path;
   if (saveAs || !path) {
+    if (d !== doc) await activate(d);
     path = await save({
-      defaultPath: doc.path ?? "Untitled.md",
+      defaultPath: d.path ?? "Untitled.md",
       filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
     });
     if (!path) return false;
   }
-  const text = view.state.doc.toString();
+  const text = (stateOf(d) ?? state).doc.toString();
   try {
-    await invoke("write_file", { path, contents: doc.crlf ? text.replace(/\n/g, "\r\n") : text });
+    await invoke("write_file", { path, contents: d.crlf ? text.replace(/\n/g, "\r\n") : text });
   } catch (err) {
     await message(String(err), { title: "Inkwell", kind: "error" });
     return false;
   }
-  const pathChanged = path !== doc.path;
-  doc.path = path;
-  doc.savedText = text;
-  doc.dirty = false;
-  updateTitle();
+  const pathChanged = path !== d.path;
+  d.path = path;
+  d.savedText = text;
+  d.dirty = false;
+  d.preview = false;
+  if (d === doc) updateTitle();
   search.refresh();
   if (pathChanged) {
-    scheduleRender(); // relative image paths may now resolve
-    void invoke("watch_file", { path });
-    prefs.set("lastFile", path);
-    sidebar.setActive(path);
+    // Saved over a file that's open in another tab: this tab now stands for it.
+    const twin = docs.find((x) => x !== d && samePath(x.path, path));
+    if (twin && !twin.dirty) removeDoc(twin);
+    if (d === doc) {
+      scheduleRender(); // relative image paths may now resolve
+      sidebar.setActive(path);
+    }
   }
+  documentsChanged();
   return true;
 }
 
+const saveDocument = (saveAs = false) => saveDoc(doc, saveAs);
+
 async function newDocument() {
-  if (await confirmDiscard()) setDocument("", null);
+  const d = makeDoc(null);
+  insertDoc(d, null);
+  await activate(d);
+  view.focus();
 }
 
 const sidebar = createSidebar({
-  open: (path) => {
-    if (!samePath(path, doc.path)) void openPath(path);
-  },
+  open: (path, keep) => void openPath(path, { preview: !keep }),
   currentPath: () => doc.path,
   renamed: (from, to) => {
-    if (!doc.path || !isInside(doc.path, from)) return;
-    doc.path = to + doc.path.slice(from.length);
-    prefs.set("lastFile", doc.path);
-    void invoke("watch_file", { path: doc.path });
+    let changed = false;
+    for (const d of docs) {
+      if (!d.path || !isInside(d.path, from)) continue;
+      d.path = to + d.path.slice(from.length);
+      changed = true;
+    }
+    if (!changed) return;
     updateTitle();
     scheduleRender(); // relative image paths
+    documentsChanged();
   },
   deleted: (path) => {
-    if (!doc.path || !isInside(doc.path, path)) return;
-    // Keep the text, but as an unsaved document: Ctrl+S asks where to put it.
-    doc.path = null;
-    doc.savedText = ORPHANED;
-    doc.dirty = true;
-    prefs.set("lastFile", null);
-    void invoke("watch_file", { path: null });
+    let changed = false;
+    for (const d of [...docs]) {
+      if (!d.path || !isInside(d.path, path)) continue;
+      if (!d.state) {
+        removeDoc(d); // never shown, so there's nothing to keep
+        continue;
+      }
+      // Keep the text, but as an unsaved document: Ctrl+S asks where to put it.
+      d.path = null;
+      d.savedText = ORPHANED;
+      d.dirty = true;
+      d.preview = false;
+      changed = true;
+    }
+    if (!changed) return;
     updateTitle();
+    documentsChanged();
   },
 });
 
 // ---------------------------------------------------------------------------
+// Tab strip
+
+const tabStrip = createTabStrip($("tabbar"), {
+  activate: (id) => {
+    const d = docs.find((x) => x.id === id);
+    if (d) void activate(d);
+  },
+  close: (id) => {
+    const d = docs.find((x) => x.id === id);
+    if (d) void closeDoc(d);
+  },
+  keep: (id) => {
+    const d = docs.find((x) => x.id === id);
+    if (d?.preview) {
+      d.preview = false;
+      renderTabs();
+    }
+  },
+  move: (id, to) => {
+    const d = docs.find((x) => x.id === id);
+    if (!d) return;
+    docs = docs.filter((x) => x !== d);
+    docs.splice(to, 0, d);
+    documentsChanged();
+  },
+  menu: (id, e) => {
+    const d = docs.find((x) => x.id === id);
+    if (!d) return;
+    const i = docs.indexOf(d);
+    const items: MenuItem[] = [
+      { label: "Close", shortcut: "Ctrl+W", action: () => closeDoc(d) },
+      { label: "Close others", disabled: docs.length < 2, action: () => closeDocs(docs.filter((x) => x !== d)) },
+      { label: "Close to the right", disabled: i === docs.length - 1, action: () => closeDocs(docs.slice(i + 1)) },
+      { label: "Close saved", action: () => closeDocs(docs.filter((x) => !x.dirty)) },
+      { label: "Close all", action: () => closeDocs([...docs]) },
+    ];
+    if (d.preview) {
+      items.push("-", {
+        label: "Keep open",
+        action: () => {
+          d.preview = false;
+          renderTabs();
+        },
+      });
+    }
+    if (d.path) items.push("-", ...pathItems(d.path, { dir: false, root: sidebar.root(), doc: doc.path }));
+    showMenu(items, e.clientX, e.clientY);
+  },
+});
+
+function renderTabs() {
+  const counts = new Map<string, number>();
+  for (const d of docs) {
+    const name = fileName(d.path).toLowerCase();
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  tabStrip.render(
+    docs.map((d) => ({
+      id: d.id,
+      name: fileName(d.path),
+      hint: d.path && counts.get(fileName(d.path).toLowerCase())! > 1 ? fileName(dirName(d.path)) : "",
+      title: d.path ?? "Not saved",
+      dirty: d.dirty,
+      preview: d.preview,
+      active: d === doc,
+    })),
+  );
+}
+
+/** Ctrl+Tab walks the most-recently-used order while Ctrl is held, like Alt+Tab. */
+let cycle: { order: Doc[]; i: number } | null = null;
+
+function cycleTabs(back: boolean) {
+  if (docs.length < 2) return;
+  cycle ??= { order: [...mru], i: 0 };
+  const n = cycle.order.length;
+  cycle.i = (cycle.i + (back ? -1 : 1) + n) % n;
+  void activate(cycle.order[cycle.i]);
+}
+
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Control" && cycle) {
+    cycle = null;
+    touchMru(doc);
+  }
+});
+window.addEventListener("blur", () => {
+  if (cycle) {
+    cycle = null;
+    touchMru(doc);
+  }
+});
+
+function stepTab(delta: number) {
+  const i = docs.indexOf(doc);
+  if (docs.length > 1) void activate(docs[(i + delta + docs.length) % docs.length]);
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar panels: files, outline, folder search
 
-let tab = prefs.get<Tab>("sidebarTab", "files");
+let panel = prefs.get<Panel>("sidebarTab", "files");
 
 const outline = createOutline($("outline"), {
   state: () => view.state,
@@ -638,17 +937,13 @@ const outline = createOutline($("outline"), {
 
 const search = createSearch({
   root: () => sidebar.root(),
-  openAt: (path, line, col, len) => {
-    const at = { line, col, len };
-    if (samePath(path, doc.path)) void reveal(at);
-    else void openPath(path, { at });
-  },
+  openAt: (path, line, col, len) => void openPath(path, { at: { line, col, len }, preview: true }),
 });
 
-const outlineShown = () => tab === "outline" && sidebar.visible();
+const outlineShown = () => panel === "outline" && sidebar.visible();
 
-function showTab(next: Tab) {
-  tab = next;
+function showPanel(next: Panel) {
+  panel = next;
   prefs.set("sidebarTab", next);
   for (const b of document.querySelectorAll<HTMLElement>(".sb-tab")) {
     b.classList.toggle("active", b.dataset.tab === next);
@@ -659,7 +954,7 @@ function showTab(next: Tab) {
 }
 
 for (const b of document.querySelectorAll<HTMLElement>(".sb-tab")) {
-  b.addEventListener("click", () => showTab(b.dataset.tab as Tab));
+  b.addEventListener("click", () => showPanel(b.dataset.tab as Panel));
 }
 
 function toggleSidebar() {
@@ -684,12 +979,12 @@ function queueOutlineHighlight() {
 
 function showOutline() {
   sidebar.show();
-  showTab("outline");
+  showPanel("outline");
 }
 
 function searchFolder() {
   sidebar.show();
-  showTab("search");
+  showPanel("search");
   const sel = view.state.selection.main;
   search.focus(view.hasFocus ? view.state.sliceDoc(sel.from, sel.to) : undefined);
 }
@@ -708,7 +1003,7 @@ function quickOpenItems(query: string, root: string | null, files: string[]): Pa
     const name = fileName(path);
     const rel = root && isInside(path, root) ? relativePath(root, path) : path;
     const dir = rel.slice(0, Math.max(0, rel.length - name.length - 1));
-    const item: PaletteItem = { label: name, detail: dir, run: () => openPath(path) };
+    const item: PaletteItem = { label: name, detail: dir, run: () => openPath(path, { preview: true }) };
     let score = -i; // no query: recent files first, then alphabetical
     if (query.trim()) {
       const byName = fuzzy(query, name);
@@ -918,6 +1213,9 @@ function moreMenu(): MenuItem[] {
     { label: "Save", shortcut: "Ctrl+S", action: () => saveDocument() },
     { label: "Save as…", shortcut: "Ctrl+Shift+S", action: () => saveDocument(true) },
     "-",
+    { label: "Close tab", shortcut: "Ctrl+W", action: () => closeDoc(doc) },
+    { label: "Reopen closed tab", shortcut: "Ctrl+Shift+T", disabled: closedPaths.length === 0, action: reopenClosed },
+    "-",
     { label: "Export as PDF…", shortcut: "Ctrl+Shift+E", action: exportPdf },
     { label: "Export as HTML…", action: exportHtml },
     { label: "Copy as rich text", action: copyDocumentRich },
@@ -981,7 +1279,7 @@ preview.addEventListener("click", (e) => {
     void openUrl(href);
   } else if (doc.path && /\.(md|markdown|mdown|mkd)(#.*)?$/i.test(href)) {
     const rel = decodeURI(href.replace(/#.*$/, "")).replace(/\//g, "\\");
-    void openPath(/^[a-z]:\\/i.test(rel) ? rel : `${dirName(doc.path)}\\${rel.replace(/^\.\\/, "")}`);
+    void openPath(/^[a-z]:\\/i.test(rel) ? rel : `${dirName(doc.path)}\\${rel.replace(/^\.\\/, "")}`, { preview: true });
   }
 });
 
@@ -991,20 +1289,32 @@ preview.addEventListener("click", (e) => {
 window.addEventListener(
   "keydown",
   (e) => {
-    if (!(e.ctrlKey || e.metaKey)) return;
     const k = e.key.toLowerCase();
     const handle = (fn: () => unknown) => {
       e.preventDefault();
       e.stopPropagation();
       fn();
     };
+    // Alt+1…8 jump to a tab, Alt+9 to the last (Ctrl+1/2/3 are the view modes).
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+      const n = Number(e.code.slice(5));
+      const d = n === 9 ? docs[docs.length - 1] : docs[n - 1];
+      if (d) handle(() => activate(d));
+      return;
+    }
+    if (!(e.ctrlKey || e.metaKey)) return;
     if (e.altKey) {
       if (k === "n") handle(newFileInFolder);
       return;
     }
     // In the editor, Ctrl+B is bold (see format.ts); elsewhere it toggles the sidebar.
     const inEditor = !!(e.target as HTMLElement | null)?.closest?.(".cm-editor");
-    if (k === "o" && e.shiftKey) handle(showOutline);
+    if (k === "tab") handle(() => cycleTabs(e.shiftKey));
+    else if (k === "pagedown") handle(() => stepTab(1));
+    else if (k === "pageup") handle(() => stepTab(-1));
+    else if (k === "w" && !e.shiftKey) handle(() => closeDoc(doc));
+    else if (k === "t" && e.shiftKey) handle(reopenClosed);
+    else if (k === "o" && e.shiftKey) handle(showOutline);
     else if (k === "f" && e.shiftKey) handle(searchFolder);
     else if (k === "p" && !e.shiftKey) handle(quickOpen);
     else if (k === "o") handle(openDialog);
@@ -1039,7 +1349,21 @@ void appWindow.onResized(() => void refreshMaxGlyph());
 
 void appWindow.onCloseRequested(async (e) => {
   savePosition();
-  if (!(await confirmDiscard())) e.preventDefault();
+  const dirty = docs.filter((d) => d.dirty);
+  if (dirty.length === 0) return;
+  const names = dirty.map((d) => `• ${fileName(d.path)}`).join("\n");
+  const choice = await message(
+    dirty.length === 1 ? `Save changes to ${fileName(dirty[0].path)}?` : `Save changes to ${dirty.length} files?\n\n${names}`,
+    { title: "Inkwell", kind: "warning", buttons: { yes: dirty.length === 1 ? "Save" : "Save all", no: "Don't save", cancel: "Cancel" } },
+  );
+  if (choice === "Don't save" || choice === "No") return;
+  if (choice !== "Cancel") {
+    for (const d of dirty) {
+      if (!(await saveDoc(d))) return e.preventDefault();
+    }
+    return;
+  }
+  e.preventDefault();
 });
 
 void getCurrentWebview().onDragDropEvent((e) => {
@@ -1048,13 +1372,11 @@ void getCurrentWebview().onDragDropEvent((e) => {
   if (e.payload.type !== "drop" || e.payload.paths.length === 0) return;
   const images = e.payload.paths.filter((p) => IMAGE_FILE.test(p));
   if (images.length === e.payload.paths.length) linkImages(images);
-  else void openPath(e.payload.paths.find((p) => !IMAGE_FILE.test(p))!);
+  else for (const p of e.payload.paths.filter((p) => !IMAGE_FILE.test(p))) void openPath(p);
 });
 
 // A second launch (double-clicking another file) forwards its file here.
-void listen<string>("open-file", (e) => {
-  if (!samePath(e.payload, doc.path)) void openPath(e.payload);
-});
+void listen<string>("open-file", (e) => void openPath(e.payload));
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -1062,12 +1384,27 @@ void listen<string>("open-file", (e) => {
 applyTheme();
 setZoom(zoom);
 setMode(mode);
-showTab(tab);
+showPanel(panel);
 void refreshMaxGlyph();
 void loadEditors();
 
+// Restore the last session's tabs. They load when first shown, so only the
+// active one is read now. (Older versions saved just the last file.)
+type Session = { tabs: string[]; active: string | null };
+const legacyFile = prefs.get<string | null>("lastFile", null);
+const session = prefs.get<Session | null>("session", legacyFile ? { tabs: [legacyFile], active: legacyFile } : null);
+docs = (session?.tabs ?? []).map((p) => makeDoc(p));
+const preferred = docs.find((d) => samePath(d.path, session?.active ?? null));
+mru = preferred ? [preferred, ...docs.filter((d) => d !== preferred)] : [...docs];
+
 const initial = await invoke<string | null>("initial_file");
-const lastFile = prefs.get<string | null>("lastFile", null);
-if (initial) await openPath(initial);
-else if (!(lastFile && (await openPath(lastFile, { quiet: true })))) setDocument(WELCOME, null);
+let shown = initial ? await openPath(initial) : false;
+// A restored file that has gone missing closes its tab; try the next.
+while (!shown && mru.length) shown = await activate(mru[0]);
+if (!shown) {
+  const welcome = makeDoc(null);
+  docs = [welcome];
+  loadText(welcome, WELCOME);
+  await activate(welcome);
+}
 view.focus();

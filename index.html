@@ -75,13 +75,16 @@
         </div>
       </aside>
 
-      <main id="workspace" data-mode="split">
-        <section id="editor-pane"></section>
-        <div id="splitter" role="separator" aria-orientation="vertical"></div>
-        <section id="preview-pane" tabindex="-1">
-          <article id="preview" class="markdown-body"></article>
-        </section>
-      </main>
+      <div id="main">
+        <div id="tabbar" role="tablist" aria-label="Open files" hidden></div>
+        <main id="workspace" data-mode="split">
+          <section id="editor-pane"></section>
+          <div id="splitter" role="separator" aria-orientation="vertical"></div>
+          <section id="preview-pane" tabindex="-1">
+            <article id="preview" class="markdown-body"></article>
+          </section>
+        </main>
+      </div>
       </div>
 
       <footer id="statusbar">

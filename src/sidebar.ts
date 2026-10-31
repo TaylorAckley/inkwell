@@ -7,7 +7,8 @@ import { pathItems, reportError } from "./actions";
 type Entry = { name: string; path: string; dir: boolean };
 
 export type SidebarHost = {
-  open(path: string): void;
+  /** Single click opens in the temporary tab; `keep` (double-click) opens a regular one. */
+  open(path: string, keep?: boolean): void;
   currentPath(): string | null;
   /** A file or folder moved; `from` may be an ancestor of the open document. */
   renamed(from: string, to: string): void;
@@ -66,6 +67,7 @@ export function createSidebar(host: SidebarHost) {
         where.textContent = fileName(dirName(path));
         li.append(name, where);
         li.addEventListener("click", () => host.open(path));
+        li.addEventListener("dblclick", () => host.open(path, true));
         return li;
       }),
     );
@@ -88,7 +90,7 @@ export function createSidebar(host: SidebarHost) {
     const path = li.dataset.path!;
     showMenu(
       [
-        { label: "Open", action: () => host.open(path) },
+        { label: "Open", action: () => host.open(path, true) },
         { label: "Remove from recent", action: () => removeRecent(path) },
         "-",
         ...pathItems(path, { dir: false, root, doc: host.currentPath() }),
@@ -144,6 +146,7 @@ export function createSidebar(host: SidebarHost) {
       } else {
         row.classList.toggle("active", samePath(e.path, active));
         row.addEventListener("click", () => host.open(e.path));
+        row.addEventListener("dblclick", () => host.open(e.path, true));
       }
     }
     return rows;
@@ -255,7 +258,7 @@ export function createSidebar(host: SidebarHost) {
           return false;
         }
         if (kind === "folder") expanded.add(path);
-        else queueMicrotask(() => host.open(path));
+        else queueMicrotask(() => host.open(path, true));
         return true;
       },
     });
@@ -325,7 +328,7 @@ export function createSidebar(host: SidebarHost) {
       const dir = row.dataset.dir === "true";
       const target = dir ? path : dirName(path);
       items = [
-        ...(dir ? [] : [{ label: "Open", action: () => host.open(path) }, "-" as const]),
+        ...(dir ? [] : [{ label: "Open", action: () => host.open(path, true) }, "-" as const]),
         { label: "New file", action: () => createIn(target, "file") },
         { label: "New folder", action: () => createIn(target, "folder") },
         "-",

@@ -6,6 +6,7 @@ mod pdf;
 mod shell;
 mod workspace;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -14,11 +15,12 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
-/// The open document and the modification time we last saw for it.
-/// A background thread polls it; polling (rather than OS notifications)
-/// copes with editors that save by writing a temp file and renaming it.
+/// The open documents (one per tab) and the modification time last seen for
+/// each. A background thread polls them; polling (rather than OS
+/// notifications) copes with editors that save by writing a temp file and
+/// renaming it, and costs one metadata call per tab.
 #[derive(Default)]
-struct Watched(Mutex<Option<(PathBuf, Option<SystemTime>)>>);
+struct Watched(Mutex<HashMap<PathBuf, Option<SystemTime>>>);
 
 fn mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
@@ -60,21 +62,22 @@ async fn write_file(path: PathBuf, contents: String, watched: State<'_, Watched>
         })?;
 
     // Record our own write so the watcher doesn't report it as an external change.
-    if let Some((p, seen)) = watched.0.lock().unwrap().as_mut() {
-        if *p == path {
-            *seen = mtime(&path);
-        }
+    if let Some(seen) = watched.0.lock().unwrap().get_mut(&path) {
+        *seen = mtime(&path);
     }
     Ok(())
 }
 
-/// Start watching `path` for external changes (or stop, with `None`).
+/// Watch exactly `paths` for external changes. Files already watched keep
+/// their last-seen time, so a change made in the meantime is still reported.
 #[tauri::command]
-fn watch_file(path: Option<PathBuf>, watched: State<'_, Watched>) {
-    *watched.0.lock().unwrap() = path.map(|p| {
-        let seen = mtime(&p);
-        (p, seen)
-    });
+fn watch_files(paths: Vec<PathBuf>, watched: State<'_, Watched>) {
+    let mut map = watched.0.lock().unwrap();
+    let old = std::mem::take(&mut *map);
+    for path in paths {
+        let seen = old.get(&path).copied().unwrap_or_else(|| mtime(&path));
+        map.insert(path, seen);
+    }
 }
 
 #[derive(Serialize)]
@@ -133,24 +136,20 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(700));
-                let changed = {
+                let mut changed = Vec::new();
+                {
                     let state = handle.state::<Watched>();
-                    let mut guard = state.0.lock().unwrap();
-                    match guard.as_mut() {
-                        Some((path, seen)) => {
-                            let now = mtime(path);
-                            // A missing file (mid-rename, or deleted) isn't a change we can act on.
-                            if now.is_some() && now != *seen {
-                                *seen = now;
-                                Some(path.display().to_string())
-                            } else {
-                                None
-                            }
+                    let mut map = state.0.lock().unwrap();
+                    for (path, seen) in map.iter_mut() {
+                        let now = mtime(path);
+                        // A missing file (mid-rename, or deleted) isn't a change we can act on.
+                        if now.is_some() && now != *seen {
+                            *seen = now;
+                            changed.push(path.display().to_string());
                         }
-                        None => None,
                     }
-                };
-                if let Some(path) = changed {
+                }
+                for path in changed {
                     let _ = handle.emit("file-changed", path);
                 }
             });
@@ -160,7 +159,7 @@ fn main() {
             render_markdown,
             read_file,
             write_file,
-            watch_file,
+            watch_files,
             list_dir,
             initial_file,
             shell::create_file,
