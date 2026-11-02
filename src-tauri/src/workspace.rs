@@ -15,7 +15,7 @@ const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// Lines longer than this are sent as a window around the match.
 const MAX_LINE: usize = 600;
 
-/// Every markdown file under `root`, skipping the same folders as the sidebar.
+/// Every document under `root`, skipping the same folders as the sidebar.
 /// Symlinked folders aren't followed, so link cycles can't trap the walk.
 fn walk(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -31,7 +31,7 @@ fn walk(root: &Path) -> Vec<PathBuf> {
             let Ok(kind) = entry.file_type() else { continue };
             if kind.is_dir() {
                 stack.push(entry.path());
-            } else if kind.is_file() && crate::is_markdown(&name) {
+            } else if kind.is_file() && crate::is_document(&name) {
                 out.push(entry.path());
                 if out.len() >= MAX_FILES {
                     return out;
@@ -115,7 +115,8 @@ fn search(root: &Path, query: &str, match_case: bool, generation: u64) -> Search
         if fs::metadata(&path).map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(true) {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let (text, _) = crate::decode(&bytes);
         files += 1;
         let path_str = path.display().to_string();
         for (i, line) in text.lines().enumerate() {
@@ -144,7 +145,7 @@ fn search(root: &Path, query: &str, match_case: bool, generation: u64) -> Search
     SearchResult { hits, files, truncated }
 }
 
-/// Find `query` in every markdown file under `root` (first match per line).
+/// Find `query` in every document under `root` (first match per line).
 #[tauri::command]
 pub async fn search_folder(root: PathBuf, query: String, match_case: bool) -> SearchResult {
     let generation = SEARCH_GEN.fetch_add(1, Ordering::Relaxed) + 1;
@@ -234,20 +235,24 @@ mod tests {
     #[test]
     fn searches_folder() {
         let dir = std::env::temp_dir().join(format!("inkwell-search-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir); // left over from a failed run
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::create_dir_all(dir.join("node_modules")).unwrap();
         fs::write(dir.join("a.md"), "# Title\nfind the Needle here\n").unwrap();
         fs::write(dir.join("sub").join("b.md"), "no match\nneedle again\n").unwrap();
         fs::write(dir.join("node_modules").join("c.md"), "needle\n").unwrap();
-        fs::write(dir.join("d.txt"), "needle\n").unwrap();
+        fs::write(dir.join("d.png"), "needle\n").unwrap();
+        // Logs are searched too, even when they aren't UTF-8.
+        fs::write(dir.join("e.log"), b"caf\xE9 needle\n").unwrap();
 
         let gen = SEARCH_GEN.fetch_add(1, Ordering::Relaxed) + 1;
         let r = search(&dir, "needle", false, gen);
-        assert_eq!(r.hits.len(), 2);
+        assert_eq!(r.hits.len(), 3);
         assert_eq!((r.hits[0].line, r.hits[0].col, r.hits[0].len), (2, 9, 6));
-        assert_eq!(r.hits[1].line, 2);
+        assert_eq!((r.hits[1].line, r.hits[1].col), (1, 5));
+        assert_eq!(r.hits[2].line, 2);
         let r = search(&dir, "needle", true, gen);
-        assert_eq!(r.hits.len(), 1);
+        assert_eq!(r.hits.len(), 2);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -40,6 +40,8 @@
   --syn-function: #82b0ff;
   --syn-type: #6fd6cf;
   --syn-property: #e8c47f;
+  --log-error: #ff7b72;
+  --log-warn: #e3b341;
 }
 
 :root[data-theme="light"] {
@@ -68,6 +70,8 @@
   --syn-function: #2457c5;
   --syn-type: #0e7490;
   --syn-property: #946100;
+  --log-error: #cf222e;
+  --log-warn: #9a6700;
 }
 
 /* ------------------------------------------------------------------------
@@ -196,6 +200,42 @@ button {
   background: var(--pane);
   color: var(--fg);
   box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+/* Plain text and logs have no preview. */
+.segmented.disabled button {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* Log files: levels and timestamps, plus a quiet line-number gutter. */
+.log-error {
+  color: var(--log-error);
+  font-weight: 600;
+}
+.log-warn {
+  color: var(--log-warn);
+  font-weight: 600;
+}
+.log-info {
+  color: var(--syn-function);
+}
+.log-debug,
+.log-time {
+  color: var(--muted);
+}
+.cm-editor.cm-log .cm-content {
+  max-width: none;
+  margin: 0;
+  padding: 12px 24px 45vh 10px;
+}
+.cm-gutters {
+  background: transparent;
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+}
+.cm-lineNumbers .cm-gutterElement {
+  padding: 0 10px 0 14px;
+  font-size: 0.85em;
 }
 
 .tb-right {

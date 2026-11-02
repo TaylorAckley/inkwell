@@ -15,7 +15,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 /** Context shown before the match, so the match stays visible in a narrow sidebar. */
 const LEAD = 24;
 
-/** The sidebar's Search panel: text search across every markdown file in the folder. */
+/** The sidebar's Search panel: text search across every document (markdown, text, log) in the folder. */
 export function createSearch(host: SearchHost) {
   const input = $<HTMLInputElement>("search-input");
   const caseBtn = $<HTMLButtonElement>("search-case");

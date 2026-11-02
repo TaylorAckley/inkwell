@@ -27,9 +27,31 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-fn is_markdown(name: &str) -> bool {
+/// Files Inkwell lists and searches: markdown, plus plain text and logs.
+fn is_document(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    [".md", ".markdown", ".mdown", ".mkd"].iter().any(|ext| lower.ends_with(ext))
+    [".md", ".markdown", ".mdown", ".mkd", ".txt", ".log"].iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Larger files would make the editor sluggish; open them elsewhere.
+const MAX_OPEN_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Text from a file's bytes, and whether it was valid UTF-8. UTF-16 files
+/// (with a byte-order mark) are decoded; anything else that isn't UTF-8
+/// (a Windows-1252 log, a stray binary byte) is decoded lossily.
+fn decode(bytes: &[u8]) -> (String, bool) {
+    let utf16 = |chunks: std::slice::ChunksExact<u8>, le: bool| {
+        let units: Vec<u16> = chunks.map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => (utf16(rest.chunks_exact(2), true), false),
+        [0xFE, 0xFF, rest @ ..] => (utf16(rest.chunks_exact(2), false), false),
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => (s.to_owned(), true),
+            Err(_) => (String::from_utf8_lossy(bytes).into_owned(), false),
+        },
+    }
 }
 
 /// Dotfiles and build/dependency folders, which the sidebar and search ignore.
@@ -44,9 +66,22 @@ async fn render_markdown(source: String) -> String {
     markdown::render(&source)
 }
 
+#[derive(Serialize)]
+struct FileText {
+    text: String,
+    /// False when the file wasn't UTF-8, so saving it back would change its bytes.
+    exact: bool,
+}
+
 #[tauri::command]
-async fn read_file(path: PathBuf) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| format!("Could not read {}: {e}", path.display()))
+async fn read_file(path: PathBuf) -> Result<FileText, String> {
+    let err = |e: std::io::Error| format!("Could not read {}: {e}", path.display());
+    let size = fs::metadata(&path).map_err(err)?.len();
+    if size > MAX_OPEN_BYTES {
+        return Err(format!("{} is {} MB, too large to open (the limit is {} MB).", path.display(), size >> 20, MAX_OPEN_BYTES >> 20));
+    }
+    let (text, exact) = decode(&fs::read(&path).map_err(err)?);
+    Ok(FileText { text, exact })
 }
 
 /// Write via a temp file + rename so a crash mid-save never truncates the document.
@@ -88,7 +123,7 @@ struct DirEntry {
     dir: bool,
 }
 
-/// Subfolders and markdown files in `path`, folders first, skipping dotfiles
+/// Subfolders and documents in `path`, folders first, skipping dotfiles
 /// and build/dependency folders.
 #[tauri::command]
 async fn list_dir(path: PathBuf) -> Result<Vec<DirEntry>, String> {
@@ -101,7 +136,7 @@ async fn list_dir(path: PathBuf) -> Result<Vec<DirEntry>, String> {
                 return None;
             }
             let dir = e.file_type().ok()?.is_dir();
-            if !dir && !is_markdown(&name) {
+            if !dir && !is_document(&name) {
                 return None;
             }
             Some(DirEntry { path: e.path().display().to_string(), name, dir })
@@ -228,4 +263,28 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode, is_document};
+
+    #[test]
+    fn decodes_utf8_utf16_and_other_bytes() {
+        assert_eq!(decode("héllo".as_bytes()), ("héllo".to_owned(), true));
+        let le: Vec<u8> = [0xFF, 0xFE].into_iter().chain("hi\r\n".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(decode(&le), ("hi\r\n".to_owned(), false));
+        let be: Vec<u8> = [0xFE, 0xFF].into_iter().chain("hi".encode_utf16().flat_map(u16::to_be_bytes)).collect();
+        assert_eq!(decode(&be), ("hi".to_owned(), false));
+        // Windows-1252 "café" is not UTF-8.
+        assert_eq!(decode(b"caf\xE9"), ("caf\u{FFFD}".to_owned(), false));
+    }
+
+    #[test]
+    fn lists_text_and_logs() {
+        for name in ["a.md", "B.MARKDOWN", "notes.txt", "app.LOG"] {
+            assert!(is_document(name), "{name}");
+        }
+        assert!(!is_document("photo.png"));
+    }
 }

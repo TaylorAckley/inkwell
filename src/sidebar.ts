@@ -169,7 +169,7 @@ export function createSidebar(host: SidebarHost) {
     if (rows.length === 0) {
       const empty = document.createElement("div");
       empty.className = "sb-empty";
-      empty.textContent = "No markdown files here";
+      empty.textContent = "No documents here";
       tree.replaceChildren(empty);
     } else {
       tree.replaceChildren(...rows);

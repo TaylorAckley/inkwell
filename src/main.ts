@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save, ask, message } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -42,6 +42,7 @@ import { showMenu, showMenuAt, type MenuItem } from "./menu";
 import { copy, editorItems, loadEditors, pathItems, reportError, run, toast } from "./actions";
 import { copyRich, previewHtml, selectionIn, standaloneHtml } from "./export";
 import { WELCOME } from "./welcome";
+import { kindOf, logExtensions, type Kind } from "./plaintext";
 
 type Mode = "edit" | "split" | "preview";
 type Theme = "light" | "dark";
@@ -74,6 +75,10 @@ type Doc = {
   savedText: string;
   dirty: boolean;
   crlf: boolean;
+  /** Markdown gets the preview; plain text and logs are editor-only. */
+  kind: Kind;
+  /** The file wasn't UTF-8, so saving would change its bytes: view only. */
+  readOnly: boolean;
   /** Temporary tab: the next file opened with a single click replaces it. */
   preview: boolean;
   scroll: { editor: number; preview: number } | null;
@@ -90,18 +95,34 @@ const closedPaths: string[] = [];
 const ORPHANED = "\u0000orphaned";
 
 function makeDoc(path: string | null, preview = false): Doc {
-  return { id: nextDocId++, path, state: null, savedText: "", dirty: false, crlf: false, preview, scroll: null };
+  const kind = kindOf(path);
+  return { id: nextDocId++, path, state: null, savedText: "", dirty: false, crlf: false, kind, readOnly: false, preview, scroll: null };
 }
 
 /** Placeholder until the first real document is shown; never in `docs`. */
 let doc: Doc = makeDoc(null);
 
-function loadText(d: Doc, text: string) {
+/** A file's text as read_file returns it; `exact` is false if it wasn't UTF-8. */
+type FileText = { text: string; exact: boolean };
+const readFile = (path: string) => invoke<FileText>("read_file", { path });
+
+function loadText(d: Doc, file: FileText) {
+  const { text } = file;
   d.crlf = text.includes("\r\n");
   d.savedText = d.crlf ? text.replace(/\r\n/g, "\n") : text;
   d.dirty = false;
+  d.readOnly = !file.exact;
   // A fresh state also starts a fresh undo history.
-  d.state = EditorState.create({ doc: d.savedText, extensions: editorExtensions() });
+  d.state = EditorState.create({ doc: d.savedText, extensions: editorExtensions(d) });
+}
+
+const isPlain = (d: Doc) => d.kind !== "markdown";
+
+/** Apply a change of kind or read-only status to a document's editor, keeping its text and undo history. */
+function reconfigure(d: Doc) {
+  const effects = kindConf.reconfigure(kindExtensions(d));
+  if (d === doc) view.dispatch({ effects });
+  else if (d.state) d.state = d.state.update({ effects }).state;
 }
 
 /** A document's current state, whether it's showing or in the background. */
@@ -114,7 +135,9 @@ function updateTitle() {
   $("doc-title").textContent = name;
   $("dirty-dot").classList.toggle("on", doc.dirty);
   $("st-path").textContent = doc.path ?? "Not saved";
-  $("st-eol").textContent = doc.crlf ? "CRLF" : "LF";
+  $("st-eol").textContent = [doc.kind === "log" ? "Log" : doc.kind === "text" ? "Plain text" : "", doc.crlf ? "CRLF" : "LF", doc.readOnly ? "Read-only (not UTF-8)" : ""]
+    .filter(Boolean)
+    .join("  ·  ");
   void appWindow.setTitle(`${doc.dirty ? "• " : ""}${name} — Inkwell`);
 }
 
@@ -165,28 +188,42 @@ function restorePosition(path: string) {
 // ---------------------------------------------------------------------------
 // Editor
 
-function editorExtensions() {
+/** What differs between markdown, plain text and logs; swapped in place when Save As changes the kind. */
+const kindConf = new Compartment();
+
+function kindExtensions(d: Doc) {
+  const readOnly = d.readOnly ? [EditorState.readOnly.of(true)] : [];
+  if (d.kind === "log") return [...logExtensions, readOnly];
+  if (d.kind === "text") return [EditorView.lineWrapping, readOnly];
+  return [
+    EditorView.lineWrapping,
+    // Includes the markdown keymap: Enter continues lists, tasks and quotes;
+    // Backspace removes an empty list marker.
+    markdown({ base: markdownLanguage, codeLanguages: languages }),
+    syntaxHighlighting(markdownHighlight),
+    indentOnInput(),
+    closeBrackets(),
+    keymap.of([...formatKeymap, ...closeBracketsKeymap]),
+    readOnly,
+  ];
+}
+
+function editorExtensions(d: Doc) {
   return [
     highlightSpecialChars(),
     history(),
     drawSelection(),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
-    indentOnInput(),
     bracketMatching(),
-    closeBrackets(),
     rectangularSelection(),
     crosshairCursor(),
     highlightActiveLine(),
     highlightSelectionMatches(),
-    EditorView.lineWrapping,
     placeholder("Start writing…"),
-    // Includes the markdown keymap: Enter continues lists, tasks and quotes;
-    // Backspace removes an empty list marker.
-    markdown({ base: markdownLanguage, codeLanguages: languages }),
-    syntaxHighlighting(markdownHighlight),
+    kindConf.of(kindExtensions(d)),
     editorTheme,
-    keymap.of([...formatKeymap, ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
+    keymap.of([...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
     EditorView.domEventHandlers({ paste: pasteImage }),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {
@@ -201,7 +238,7 @@ function editorExtensions() {
 
 const view = new EditorView({
   parent: editorPane,
-  state: EditorState.create({ doc: "", extensions: editorExtensions() }),
+  state: EditorState.create({ doc: "", extensions: editorExtensions(doc) }),
 });
 
 /** Preview scroll to restore once the incoming tab's preview has rendered. */
@@ -217,10 +254,10 @@ let activateSeq = 0;
 async function activate(d: Doc, at?: At): Promise<boolean> {
   const seq = ++activateSeq;
   if (!d.state) {
-    if (!d.path) loadText(d, "");
+    if (!d.path) loadText(d, { text: "", exact: true });
     else {
       try {
-        loadText(d, await invoke<string>("read_file", { path: d.path }));
+        loadText(d, await readFile(d.path));
       } catch {
         if (docs.includes(d)) {
           toast(`Couldn't open ${fileName(d.path)}`);
@@ -247,13 +284,14 @@ async function activate(d: Doc, at?: At): Promise<boolean> {
   doc = d;
   if (!cycle) touchMru(d);
   view.setState(d.state!);
+  applyLayout();
   view.scrollDOM.scrollTop = 0;
   previewPane.scrollTop = 0;
   pendingPreviewScroll = null;
   if (at) void reveal(at);
   else if (d.scroll) {
     const { editor, preview: previewTop } = d.scroll;
-    lastScrollSource = mode === "preview" ? "preview" : "editor";
+    lastScrollSource = shownMode() === "preview" ? "preview" : "editor";
     pendingPreviewScroll = previewTop;
     requestAnimationFrame(() => (view.scrollDOM.scrollTop = editor));
   } else if (d.path) restorePosition(d.path);
@@ -315,7 +353,7 @@ async function reveal(at: At) {
   const to = Math.min(from + (at.len ?? 0), line.to);
   lastScrollSource = "editor";
   view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: "start", yMargin: 48 }) });
-  if (mode !== "preview") return view.focus();
+  if (shownMode() !== "preview") return view.focus();
   if (previewStale) await render();
   scrollPreviewTo(line.number);
 }
@@ -330,7 +368,7 @@ function scrollPreviewTo(line: number) {
 
 /** The source line at the top of whichever pane the reader is looking at. */
 function topLine(): number {
-  if (mode === "preview") {
+  if (shownMode() === "preview") {
     // Binary search, so only a handful of blocks are measured per scroll frame.
     const top = previewPane.getBoundingClientRect().top + 24;
     const B = getBlocks();
@@ -340,13 +378,22 @@ function topLine(): number {
   return view.state.doc.lineAt(block.from).number;
 }
 
+/** Whether the end of the document is on screen, so a growing log should keep following it. */
+function endInView() {
+  const last = view.lineBlockAt(view.state.doc.length);
+  return last.bottom + view.documentPadding.top <= view.scrollDOM.scrollTop + view.scrollDOM.clientHeight + 4;
+}
+
 /**
  * Bring in an external edit as a minimal change, so scroll position, cursor
- * and undo history survive. Works for background tabs too.
+ * and undo history survive. Works for background tabs too. A log scrolled to
+ * its end keeps following new lines, like tail -f.
  */
-function applyExternalText(d: Doc, text: string) {
+function applyExternalText(d: Doc, file: FileText) {
   const state = stateOf(d);
   if (!state) return;
+  const { text } = file;
+  const follow = d === doc && d.kind === "log" && endInView();
   d.crlf = text.includes("\r\n");
   const next = d.crlf ? text.replace(/\r\n/g, "\n") : text;
   const cur = state.doc.toString();
@@ -366,6 +413,11 @@ function applyExternalText(d: Doc, text: string) {
     if (d === doc) view.dispatch({ changes });
     else d.state = state.update({ changes }).state;
   }
+  if (d.readOnly !== !file.exact) {
+    d.readOnly = !file.exact;
+    reconfigure(d);
+  }
+  if (follow) view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.length, { y: "end" }) });
   if (d === doc) updateTitle();
   renderTabs();
 }
@@ -387,8 +439,8 @@ void listen<string>("file-changed", async (e) => {
     if (!reload) return;
   }
   try {
-    const text = await invoke<string>("read_file", { path });
-    if (docs.includes(d) && samePath(path, d.path)) applyExternalText(d, text);
+    const file = await readFile(path);
+    if (docs.includes(d) && samePath(path, d.path)) applyExternalText(d, file);
   } catch {
     /* deleted or locked mid-write; the next change event will retry */
   }
@@ -433,7 +485,7 @@ async function render(force = false) {
   const words = text.match(/\S+/g)?.length ?? 0;
   $("st-words").textContent = `${words.toLocaleString()} ${words === 1 ? "word" : "words"}`;
 
-  if (mode === "edit" && !force) return; // rendered lazily when the preview is shown
+  if ((shownMode() === "edit" || isPlain(doc)) && !force) return; // rendered lazily when the preview is shown
   const started = performance.now();
   const seq = ++renderSeq;
   const isCurrent = () => seq === renderSeq;
@@ -462,9 +514,9 @@ async function render(force = false) {
     if (el) settle(el, keys[i]);
   }
   lastRenderMs = performance.now() - started;
-  if (pendingPreviewScroll !== null && mode === "preview") previewPane.scrollTop = pendingPreviewScroll;
+  if (pendingPreviewScroll !== null && shownMode() === "preview") previewPane.scrollTop = pendingPreviewScroll;
   pendingPreviewScroll = null;
-  if (mode === "split" && lastScrollSource === "editor") syncScroll("editor");
+  if (shownMode() === "split" && lastScrollSource === "editor") syncScroll("editor");
 }
 
 function resolveImages(roots: HTMLElement[]) {
@@ -591,7 +643,7 @@ function mapScroll(y: number, from: "editor" | "preview"): number {
 }
 
 function syncScroll(source: "editor" | "preview") {
-  if (mode !== "split") return;
+  if (shownMode() !== "split") return;
   if (source === "editor") {
     const y = Math.round(mapScroll(view.scrollDOM.scrollTop, "editor"));
     expected.preview = y;
@@ -623,15 +675,29 @@ previewPane.addEventListener("scroll", () => onScroll("preview", previewPane), {
 
 let mode: Mode = prefs.get<Mode>("mode", "split");
 
+/** The layout on screen: plain text and logs are always editor-only, whatever the chosen mode. */
+function shownMode(): Mode {
+  return isPlain(doc) ? "edit" : mode;
+}
+
+function applyLayout() {
+  const shown = shownMode();
+  workspace.dataset.mode = shown;
+  const segmented = document.querySelector<HTMLElement>(".segmented")!;
+  segmented.classList.toggle("disabled", isPlain(doc));
+  segmented.title = isPlain(doc) ? "Plain text files have no preview" : "";
+  for (const b of segmented.querySelectorAll<HTMLButtonElement>("button")) {
+    b.classList.toggle("active", b.dataset.mode === shown);
+    b.disabled = isPlain(doc);
+  }
+}
+
 function setMode(next: Mode) {
   mode = next;
-  workspace.dataset.mode = next;
-  for (const b of document.querySelectorAll<HTMLButtonElement>(".segmented button")) {
-    b.classList.toggle("active", b.dataset.mode === next);
-  }
   prefs.set("mode", next);
-  if (next !== "edit" && previewStale) scheduleRender();
-  if (next === "preview") previewPane.focus();
+  applyLayout();
+  if (shownMode() !== "edit" && previewStale) scheduleRender();
+  if (shownMode() === "preview") previewPane.focus();
   else view.focus();
 }
 
@@ -717,9 +783,9 @@ async function openPath(path: string, opts: { quiet?: boolean; at?: At; preview?
     }
     return activate(existing, opts.at);
   }
-  let text: string;
+  let file: FileText;
   try {
-    text = await invoke<string>("read_file", { path });
+    file = await readFile(path);
   } catch (err) {
     sidebar.removeRecent(path);
     if (!opts.quiet) await message(String(err), { title: "Inkwell", kind: "error" });
@@ -727,7 +793,7 @@ async function openPath(path: string, opts: { quiet?: boolean; at?: At; preview?
   }
   if (docs.some((d) => samePath(d.path, path))) return openPath(path, opts); // opened meanwhile
   const d = makeDoc(path, !!opts.preview);
-  loadText(d, text);
+  loadText(d, file);
   const replace = (opts.preview && docs.find((x) => x.preview && !x.dirty)) || (disposable(doc) && docs.includes(doc) ? doc : null);
   insertDoc(d, replace);
   return activate(d, opts.at);
@@ -775,7 +841,9 @@ async function openDialog() {
     directory: false,
     defaultPath: doc.path ? dirName(doc.path) : undefined,
     filters: [
-      { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "txt"] },
+      { name: "Documents", extensions: ["md", "markdown", "mdown", "mkd", "txt", "log"] },
+      { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] },
+      { name: "Text and logs", extensions: ["txt", "log"] },
       { name: "All files", extensions: ["*"] },
     ],
   });
@@ -786,12 +854,18 @@ async function openDialog() {
 async function saveDoc(d: Doc, saveAs = false): Promise<boolean> {
   const state = stateOf(d);
   if (!state) return true; // never shown, so never edited
+  if (d.readOnly) {
+    toast(`${fileName(d.path)} isn't UTF-8, so it's open read-only`);
+    return false;
+  }
   let path = d.path;
   if (saveAs || !path) {
     if (d !== doc) await activate(d);
+    const markdownFilter = { name: "Markdown", extensions: ["md", "markdown"] };
+    const textFilter = { name: "Plain text", extensions: ["txt", "log"] };
     path = await save({
       defaultPath: d.path ?? "Untitled.md",
-      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+      filters: isPlain(d) ? [textFilter, markdownFilter] : [markdownFilter, textFilter],
     });
     if (!path) return false;
   }
@@ -804,6 +878,11 @@ async function saveDoc(d: Doc, saveAs = false): Promise<boolean> {
   }
   const pathChanged = path !== d.path;
   d.path = path;
+  if (kindOf(path) !== d.kind) {
+    d.kind = kindOf(path);
+    reconfigure(d);
+    if (d === doc) applyLayout();
+  }
   d.savedText = text;
   d.dirty = false;
   d.preview = false;
@@ -1069,7 +1148,7 @@ const design = createDesign({
 });
 
 // ---------------------------------------------------------------------------
-// Quick open (Ctrl+P): fuzzy-find any markdown file in the folder
+// Quick open (Ctrl+P): fuzzy-find any document in the folder
 
 let fileCache: { root: string; files: string[] } | null = null;
 
@@ -1129,6 +1208,7 @@ function insertText(text: string) {
 }
 
 function pasteImage(e: ClipboardEvent) {
+  if (isPlain(doc)) return false;
   const file = pastedImage(e.clipboardData);
   if (!file) return false;
   e.preventDefault();
@@ -1201,7 +1281,7 @@ async function exportHtml() {
 }
 
 async function ensurePreview() {
-  if (previewStale || mode === "edit") await render(true);
+  if (previewStale || shownMode() === "edit") await render(true);
 }
 
 async function copyDocumentRich() {
@@ -1361,7 +1441,7 @@ preview.addEventListener("click", (e) => {
     document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ block: "start" });
   } else if (/^(https?:|mailto:)/i.test(href)) {
     void openUrl(href);
-  } else if (doc.path && /\.(md|markdown|mdown|mkd)(#.*)?$/i.test(href)) {
+  } else if (doc.path && /\.(md|markdown|mdown|mkd|txt|log)(#.*)?$/i.test(href)) {
     const rel = decodeURI(href.replace(/#.*$/, "")).replace(/\//g, "\\");
     void openPath(/^[a-z]:\\/i.test(rel) ? rel : `${dirName(doc.path)}\\${rel.replace(/^\.\\/, "")}`, { preview: true });
   }
@@ -1490,7 +1570,7 @@ while (!shown && mru.length) shown = await activate(mru[0]);
 if (!shown) {
   const welcome = makeDoc(null);
   docs = [welcome];
-  loadText(welcome, WELCOME);
+  loadText(welcome, { text: WELCOME, exact: true });
   await activate(welcome);
 }
 view.focus();

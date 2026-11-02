@@ -8,8 +8,9 @@ A fast markdown editor and viewer for Windows, built with Rust and Tauri 2.
 - **Math and diagrams:** `$inline$`, `$$display$$` and ```` ```math ```` blocks render with KaTeX, and ```` ```mermaid ```` blocks render with Mermaid. Both load only when a document uses them.
 - **Tabs:** IDE-style tabs with temporary preview tabs, Ctrl+Tab switching, drag to reorder and session restore. Background tabs load only when first shown.
 - **Sidebar (Ctrl+\\):** files (recent plus a folder tree), an outline of the document (Ctrl+Shift+O), folder search (Ctrl+Shift+F) and the Ask panel.
-- **Quick open (Ctrl+P):** fuzzy-find any markdown file in the folder.
+- **Quick open (Ctrl+P):** fuzzy-find any document in the folder.
 - **Writing:** GitHub's formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+E, Ctrl+K, Ctrl+Shift+7/8/.), and pasted screenshots saved to `./assets`.
+- **Text and logs:** `.txt` and `.log` files open editor-only, without the preview or markdown formatting. Logs get line numbers, colored levels (ERROR, WARN, INFO, DEBUG) and timestamps, no wrapping, and follow new lines while scrolled to the end, like `tail -f`. Files that aren't UTF-8 (UTF-16, Windows-1252) open read-only so saving can't change their bytes. Files over 64 MB are refused.
 - **Export:** PDF (Ctrl+Shift+E), standalone HTML, and rich-text copy.
 - **External changes:** open files are polled for changes. A tab with no unsaved edits reloads quietly, keeping scroll position and undo history; otherwise you're asked first.
 - **Window:** Windows 11 Mica, a custom title bar, light and dark themes, and drag-and-drop to open files.
