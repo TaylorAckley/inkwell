@@ -25,7 +25,7 @@ keyring = { version = "3", features = ["windows-native"] }
 # PDF export talks to WebView2 directly; versions must match the ones wry uses.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows-core = "0.62"
+windows-core = "0.100"
 
 [profile.release]
 opt-level = 3
