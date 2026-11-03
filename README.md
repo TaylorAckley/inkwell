@@ -63,3 +63,7 @@ This produces `target/release/inkwell.exe` and an NSIS installer that registers 
 | `src/rich.ts` | Lazy KaTeX and Mermaid rendering with caches |
 | `src/editor-theme.ts` | CodeMirror theme and highlight style |
 | `src/styles.css` | Design tokens (light/dark), chrome, preview typography |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
