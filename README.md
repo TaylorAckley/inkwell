@@ -44,6 +44,16 @@ This produces `target/release/inkwell.exe` and an NSIS installer that registers 
 
 > **Long paths:** if the project sits in a deeply nested folder, MSVC's linker can hit the 260-character path limit (`LNK1104`). Fix it by setting `CARGO_TARGET_DIR` to a short path, or by enabling Windows long-path support.
 
+## Release
+
+Bump `version` in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, merge to main, then push a matching tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The Release workflow builds the installer and attaches it to a draft release on GitHub; publish it from there.
+
 ## Layout
 
 | Path | What it is |
