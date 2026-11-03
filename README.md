@@ -46,10 +46,16 @@ This produces `target/release/inkwell.exe` and an NSIS installer that registers 
 
 ## Release
 
-Bump `version` in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, merge to main, then push a matching tag:
+Bump the version in all three manifests and their lockfiles (CI builds with `--locked`, so a stale `Cargo.lock` fails):
+
+1. `npm version 0.2.0 --no-git-tag-version` (updates `package.json` and `package-lock.json`)
+2. Set `version` in `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`
+3. `cargo update --workspace --manifest-path src-tauri/Cargo.toml` (updates only inkwell's own entry in `Cargo.lock`)
+
+Commit all five files, merge to main, then push a matching tag (the workflow refuses a tag that differs from `tauri.conf.json`):
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The Release workflow builds the installer and attaches it to a draft release on GitHub; publish it from there.
