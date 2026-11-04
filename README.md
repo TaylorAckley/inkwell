@@ -44,6 +44,15 @@ This produces `target/release/inkwell.exe` and an NSIS installer that registers 
 
 > **Long paths:** if the project sits in a deeply nested folder, MSVC's linker can hit the 260-character path limit (`LNK1104`). Fix it by setting `CARGO_TARGET_DIR` to a short path, or by enabling Windows long-path support.
 
+## Release
+
+Inkwell updates itself from the latest GitHub release: it checks at startup and every six hours, downloads in the background, and offers to restart. Updates are signed, and the app only installs builds signed with the release key.
+
+1. Bump the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`.
+2. Push a tag: `git tag v0.2.1 && git push origin v0.2.1`. The Release workflow builds, signs and publishes it.
+
+The workflow reads the private key from the `TAURI_SIGNING_PRIVATE_KEY` repository secret (the key file has no password). A local `tauri build` needs the same key in that environment variable, or it fails at the signing step. If the key is lost, installed copies can't update and must be reinstalled by hand.
+
 ## Layout
 
 | Path | What it is |

@@ -1,6 +1,6 @@
 [package]
 name = "inkwell"
-version = "0.1.0"
+version = "0.2.0"
 description = "A fast markdown editor and viewer"
 edition = "2021"
 
@@ -20,6 +20,7 @@ serde_json = "1"
 # Claude API: HTTPS client and the API key in Windows Credential Manager.
 ureq = "2"
 keyring = { version = "3", features = ["windows-native"] }
+tauri-plugin-updater = "2"
 
 # PDF export talks to WebView2 directly; versions must match the ones wry uses.
 [target.'cfg(windows)'.dependencies]

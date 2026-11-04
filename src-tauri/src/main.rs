@@ -180,6 +180,7 @@ fn main() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Watched::default())
         .manage(ai::Requests::default())
         .setup(move |app| {
