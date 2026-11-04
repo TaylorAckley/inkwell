@@ -1891,3 +1891,28 @@ button {
     background-position: 140% 0, 0 0;
   }
 }
+
+/* ------------------------------------------------------------------------
+   Update notice
+   ------------------------------------------------------------------------ */
+
+#update-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 40px;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--heading);
+  background: var(--menu-bg);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+
+#update-notice span {
+  margin-right: 4px;
+}

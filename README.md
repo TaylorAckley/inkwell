@@ -46,6 +46,8 @@ This produces `target/release/inkwell.exe` and an NSIS installer that registers 
 
 ## Release
 
+Inkwell updates itself from the latest published GitHub release: it checks at startup and every six hours, downloads in the background, and offers to restart. Updates are signed, and the app only installs builds signed with the release key.
+
 Bump the version in all three manifests and their lockfiles (CI builds with `--locked`, so a stale `Cargo.lock` fails):
 
 1. `npm version 0.2.0 --no-git-tag-version` (updates `package.json` and `package-lock.json`)
@@ -58,7 +60,9 @@ Commit all five files and merge to main. Then tag the merged commit on `origin/m
 git fetch origin && git tag v0.2.0 origin/main && git push origin v0.2.0
 ```
 
-The Release workflow builds the installer and attaches it to a draft release on GitHub; publish it from there.
+The Release workflow builds and signs the installer and attaches it, with the `latest.json` the updater reads, to a draft release on GitHub. Publishing the draft is what ships the update to installed copies.
+
+The workflow reads the signing key from the `TAURI_SIGNING_PRIVATE_KEY` repository secret (the key file has no password). A local `tauri build` needs the same key in that environment variable, or it fails at the signing step. If the key is lost, installed copies can't update and must be reinstalled by hand.
 
 ## Layout
 

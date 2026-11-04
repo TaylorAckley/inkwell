@@ -43,6 +43,7 @@ import { copy, editorItems, loadEditors, pathItems, reportError, run, toast } fr
 import { copyRich, previewHtml, selectionIn, standaloneHtml } from "./export";
 import { WELCOME } from "./welcome";
 import { kindOf, logExtensions, type Kind } from "./plaintext";
+import { startUpdates } from "./updater";
 
 type Mode = "edit" | "split" | "preview";
 type Theme = "light" | "dark";
@@ -1393,6 +1394,7 @@ function moreMenu(): MenuItem[] {
       : []),
     { label: "Toggle sidebar", shortcut: "Ctrl+\\", action: toggleSidebar },
     { label: "Toggle theme", shortcut: "Ctrl+Shift+L", action: toggleTheme },
+    { label: "Check for updates", action: checkForUpdates },
   ];
 }
 
@@ -1513,24 +1515,29 @@ async function refreshMaxGlyph() {
 }
 void appWindow.onResized(() => void refreshMaxGlyph());
 
-void appWindow.onCloseRequested(async (e) => {
+/** Offer to save unsaved work before quitting. False when the user cancels. */
+async function readyToQuit(): Promise<boolean> {
   savePosition();
   const dirty = docs.filter((d) => d.dirty);
-  if (dirty.length === 0) return;
+  if (dirty.length === 0) return true;
   const names = dirty.map((d) => `• ${fileName(d.path)}`).join("\n");
   const choice = await message(
     dirty.length === 1 ? `Save changes to ${fileName(dirty[0].path)}?` : `Save changes to ${dirty.length} files?\n\n${names}`,
     { title: "Inkwell", kind: "warning", buttons: { yes: dirty.length === 1 ? "Save" : "Save all", no: "Don't save", cancel: "Cancel" } },
   );
-  if (choice === "Don't save" || choice === "No") return;
-  if (choice !== "Cancel") {
-    for (const d of dirty) {
-      if (!(await saveDoc(d))) return e.preventDefault();
-    }
-    return;
+  if (choice === "Don't save" || choice === "No") return true;
+  if (choice === "Cancel") return false;
+  for (const d of dirty) {
+    if (!(await saveDoc(d))) return false;
   }
-  e.preventDefault();
+  return true;
+}
+
+void appWindow.onCloseRequested(async (e) => {
+  if (!(await readyToQuit())) e.preventDefault();
 });
+
+const checkForUpdates = startUpdates(readyToQuit);
 
 void getCurrentWebview().onDragDropEvent((e) => {
   if (e.payload.type === "over") workspace.classList.add("drop-target");
