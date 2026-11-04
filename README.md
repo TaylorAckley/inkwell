@@ -46,12 +46,23 @@ This produces `target/release/inkwell.exe` and an NSIS installer that registers 
 
 ## Release
 
-Inkwell updates itself from the latest GitHub release: it checks at startup and every six hours, downloads in the background, and offers to restart. Updates are signed, and the app only installs builds signed with the release key.
+Inkwell updates itself from the latest published GitHub release: it checks at startup and every six hours, downloads in the background, and offers to restart. Updates are signed, and the app only installs builds signed with the release key.
 
-1. Bump the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`.
-2. Push a tag: `git tag v0.2.1 && git push origin v0.2.1`. The Release workflow builds, signs and publishes it.
+Bump the version in all three manifests and their lockfiles (CI builds with `--locked`, so a stale `Cargo.lock` fails):
 
-The workflow reads the private key from the `TAURI_SIGNING_PRIVATE_KEY` repository secret (the key file has no password). A local `tauri build` needs the same key in that environment variable, or it fails at the signing step. If the key is lost, installed copies can't update and must be reinstalled by hand.
+1. `npm version 0.2.0 --no-git-tag-version` (updates `package.json` and `package-lock.json`)
+2. Set `version` in `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`
+3. `cargo update --workspace --manifest-path src-tauri/Cargo.toml` (updates only inkwell's own entry in `Cargo.lock`)
+
+Commit all five files and merge to main. Then tag the merged commit on `origin/main` (not your local `HEAD`, which may still be the release branch) and push the tag. The workflow refuses a tag that differs from `tauri.conf.json`:
+
+```bash
+git fetch origin && git tag v0.2.0 origin/main && git push origin v0.2.0
+```
+
+The Release workflow builds and signs the installer and attaches it, with the `latest.json` the updater reads, to a draft release on GitHub. Publishing the draft is what ships the update to installed copies.
+
+The workflow reads the signing key from the `TAURI_SIGNING_PRIVATE_KEY` repository secret (the key file has no password). A local `tauri build` needs the same key in that environment variable, or it fails at the signing step. If the key is lost, installed copies can't update and must be reinstalled by hand.
 
 ## Layout
 
@@ -72,3 +83,7 @@ The workflow reads the private key from the `TAURI_SIGNING_PRIVATE_KEY` reposito
 | `src/rich.ts` | Lazy KaTeX and Mermaid rendering with caches |
 | `src/editor-theme.ts` | CodeMirror theme and highlight style |
 | `src/styles.css` | Design tokens (light/dark), chrome, preview typography |
+
+## License
+
+MIT. See [LICENSE](LICENSE).

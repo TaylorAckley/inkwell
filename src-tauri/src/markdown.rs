@@ -165,11 +165,20 @@ mod tests {
 
     #[test]
     fn many_repeated_headings_stay_linear() {
-        let doc = "## Fixed\n\ntext\n\n".repeat(20_000); // ~360 KB
-        let start = std::time::Instant::now();
-        let html = render(&doc);
-        assert!(html.contains("id=\"fixed-19999\""));
-        // Was ~300 ms with comrak's anchorizer; generous bound for slow machines.
-        assert!(start.elapsed().as_millis() < 250, "took {:?}", start.elapsed());
+        let time = |n: usize| {
+            let doc = "## Fixed\n\ntext\n\n".repeat(n);
+            let start = std::time::Instant::now();
+            let html = render(&doc);
+            let elapsed = start.elapsed();
+            assert!(html.contains(&format!("id=\"fixed-{}\"", n - 1)));
+            elapsed
+        };
+        time(100); // warm up
+        let small = time(2_000);
+        let large = time(20_000); // ~360 KB
+        // 10x the headings: linear is ~10x the time, comrak's quadratic anchorizer was ~100x.
+        // Comparing against the small run keeps this independent of machine speed.
+        let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
+        assert!(ratio < 30.0, "2k took {small:?}, 20k took {large:?} ({ratio:.1}x)");
     }
 }
