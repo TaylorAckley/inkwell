@@ -1,0 +1,24 @@
+name: WinGet
+
+# When a release is published, open a pull request to microsoft/winget-pkgs
+# for the new version, so `winget upgrade` picks it up once Microsoft merges it.
+# Needs a WINGET_TOKEN secret: a classic token with the public_repo scope, from
+# an account with a fork of microsoft/winget-pkgs.
+on:
+  release:
+    types: [released]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Submit to winget-pkgs
+    runs-on: windows-latest
+    steps:
+      # Pinned to a commit because it handles the WINGET_TOKEN secret.
+      - uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
+        with:
+          identifier: TaylorAckley.Inkwell
+          installers-regex: '_x64-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}

@@ -35,6 +35,8 @@ import { createOutline } from "./outline";
 import { createSearch } from "./search";
 import { fuzzy, openPalette, type PaletteItem } from "./palette";
 import { formatKeymap } from "./format";
+import { pasteLink, richPaste } from "./paste";
+import { tableKeymap } from "./table";
 import { IMAGE_FILE, altText, linkTarget, pastedImage, saveImage } from "./images";
 import { enhance, RICH_LANGUAGES, within } from "./rich";
 import { patchBlocks, settle } from "./patch";
@@ -83,6 +85,10 @@ type Doc = {
   /** Temporary tab: the next file opened with a single click replaces it. */
   preview: boolean;
   scroll: { editor: number; preview: number } | null;
+  /** Names this document's unsaved edits in the hot-exit store; kept across restarts. */
+  key: string;
+  /** Unsaved text from the last run, put into the editor when the document is first shown. */
+  backup: string | null;
 };
 
 let docs: Doc[] = [];
@@ -97,7 +103,20 @@ const ORPHANED = "\u0000orphaned";
 
 function makeDoc(path: string | null, preview = false): Doc {
   const kind = kindOf(path);
-  return { id: nextDocId++, path, state: null, savedText: "", dirty: false, crlf: false, kind, readOnly: false, preview, scroll: null };
+  return {
+    id: nextDocId++,
+    path,
+    state: null,
+    savedText: "",
+    dirty: false,
+    crlf: false,
+    kind,
+    readOnly: false,
+    preview,
+    scroll: null,
+    key: crypto.randomUUID(),
+    backup: null,
+  };
 }
 
 /** Placeholder until the first real document is shown; never in `docs`. */
@@ -115,6 +134,14 @@ function loadText(d: Doc, file: FileText) {
   d.readOnly = !file.exact;
   // A fresh state also starts a fresh undo history.
   d.state = EditorState.create({ doc: d.savedText, extensions: editorExtensions(d) });
+}
+
+/** Put last run's unsaved text into a just-loaded document, as an edit Ctrl+Z can undo. */
+function applyBackup(d: Doc) {
+  if (d.backup === null || !d.state) return;
+  d.state = d.state.update({ changes: { from: 0, to: d.state.doc.length, insert: d.backup } }).state;
+  d.dirty = d.backup !== d.savedText;
+  d.backup = null;
 }
 
 const isPlain = (d: Doc) => d.kind !== "markdown";
@@ -149,6 +176,7 @@ function refreshDirty(text: string) {
     if (dirty) doc.preview = false; // editing keeps a preview tab
     updateTitle();
     renderTabs();
+    saveSession();
   }
 }
 
@@ -204,7 +232,7 @@ function kindExtensions(d: Doc) {
     syntaxHighlighting(markdownHighlight),
     indentOnInput(),
     closeBrackets(),
-    keymap.of([...formatKeymap, ...closeBracketsKeymap]),
+    keymap.of([...tableKeymap, ...formatKeymap, ...closeBracketsKeymap]),
     readOnly,
   ];
 }
@@ -225,11 +253,12 @@ function editorExtensions(d: Doc) {
     kindConf.of(kindExtensions(d)),
     editorTheme,
     keymap.of([...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
-    EditorView.domEventHandlers({ paste: pasteImage }),
+    EditorView.domEventHandlers({ paste: onPaste }),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {
         scheduleRender();
         queueOutline();
+        queueKeepUnsaved();
       }
       if (u.selectionSet || u.docChanged) updateCursorStatus();
       if (u.selectionSet) queueSavePosition();
@@ -260,14 +289,20 @@ async function activate(d: Doc, at?: At): Promise<boolean> {
       try {
         loadText(d, await readFile(d.path));
       } catch {
-        if (docs.includes(d)) {
-          toast(`Couldn't open ${fileName(d.path)}`);
-          sidebar.removeRecent(d.path);
-          removeDoc(d);
+        if (d.backup === null) {
+          if (docs.includes(d)) {
+            toast(`Couldn't open ${fileName(d.path)}`);
+            sidebar.removeRecent(d.path);
+            removeDoc(d);
+          }
+          return false;
         }
-        return false;
+        // Gone, but its unsaved edits survive: keep them, and Ctrl+S puts the file back.
+        loadText(d, { text: "", exact: true });
+        d.savedText = ORPHANED;
       }
     }
+    applyBackup(d);
   }
   if (!docs.includes(d)) return false; // closed while loading
   if (seq !== activateSeq) return false; // another tab was chosen while this one loaded
@@ -314,7 +349,48 @@ function touchMru(d: Doc) {
 function documentsChanged() {
   renderTabs();
   void invoke("watch_files", { paths: docs.filter((d) => d.path && d.state).map((d) => d.path) });
-  prefs.set("session", { tabs: docs.filter((d) => d.path).map((d) => d.path), active: doc.path });
+  saveSession();
+}
+
+// ---------------------------------------------------------------------------
+// Session and hot exit: open tabs, and their unsaved edits, survive quitting,
+// crashes and update restarts. Tabs are saved in preferences; unsaved text,
+// which can be large, goes to a file through the Rust side, keyed by `Doc.key`.
+
+/** A saved document is its path; one with unsaved edits also names its kept text. */
+type SessionTab = string | { path: string | null; key: string };
+/** `active` is a tab index (older versions saved the active path). */
+type Session = { tabs: SessionTab[]; active: number | string | null };
+
+function saveSession() {
+  const kept = docs.filter((d) => d.path || d.dirty);
+  const tabs: SessionTab[] = kept.map((d) => (d.dirty ? { path: d.path, key: d.key } : d.path!));
+  const active = kept.indexOf(doc);
+  prefs.set("session", { tabs, active: active >= 0 ? active : null } satisfies Session);
+  queueKeepUnsaved();
+}
+
+let keepTimer = 0;
+let keptNothing = false;
+
+function queueKeepUnsaved() {
+  clearTimeout(keepTimer);
+  keepTimer = window.setTimeout(() => void keepUnsaved().catch(() => {}), 800);
+}
+
+/** Write every unsaved document's text to the hot-exit store. */
+async function keepUnsaved() {
+  clearTimeout(keepTimer);
+  const unsaved: Record<string, string> = {};
+  for (const d of docs) {
+    if (!d.dirty) continue;
+    const text = stateOf(d)?.doc.toString() ?? d.backup;
+    if (text !== null) unsaved[d.key] = text;
+  }
+  const empty = Object.keys(unsaved).length === 0;
+  if (empty && keptNothing) return;
+  await invoke("write_unsaved", { contents: JSON.stringify(unsaved) });
+  keptNothing = empty;
 }
 
 /** Add a document after the active tab, or in place of `replace`. */
@@ -408,7 +484,10 @@ function applyExternalText(d: Doc, file: FileText) {
     endNext--;
   }
   d.savedText = next;
-  d.dirty = false;
+  if (d.dirty) {
+    d.dirty = false;
+    saveSession();
+  }
   if (start !== endCur || start !== endNext) {
     const changes = { from: start, to: endCur, insert: next.slice(start, endNext) };
     if (d === doc) view.dispatch({ changes });
@@ -1226,6 +1305,22 @@ function pasteImage(e: ClipboardEvent) {
   return true;
 }
 
+/** Markdown paste: screenshots to ./assets, a URL over text as a link, rich text as markdown. */
+function onPaste(e: ClipboardEvent) {
+  const data = e.clipboardData;
+  if (isPlain(doc) || !data) return false;
+  if (pasteImage(e)) return true;
+  if (pasteLink(view, data)) {
+    e.preventDefault();
+    return true;
+  }
+  const markdown = richPaste(view, data);
+  if (!markdown) return false;
+  e.preventDefault();
+  markdown.then(insertText, reportError);
+  return true;
+}
+
 function linkImages(paths: string[]) {
   if (!doc.path) return toast("Save the document first to link images");
   const base = dirName(doc.path);
@@ -1515,9 +1610,19 @@ async function refreshMaxGlyph() {
 }
 void appWindow.onResized(() => void refreshMaxGlyph());
 
-/** Offer to save unsaved work before quitting. False when the user cancels. */
+/**
+ * Before quitting: keep unsaved work for next time (hot exit), or if that
+ * fails, offer to save it. False when the user cancels.
+ */
 async function readyToQuit(): Promise<boolean> {
   savePosition();
+  saveSession();
+  try {
+    await keepUnsaved();
+    return true;
+  } catch (err) {
+    reportError(err);
+  }
   const dirty = docs.filter((d) => d.dirty);
   if (dirty.length === 0) return true;
   const names = dirty.map((d) => `• ${fileName(d.path)}`).join("\n");
@@ -1561,13 +1666,30 @@ showPanel(panel);
 void refreshMaxGlyph();
 void loadEditors();
 
-// Restore the last session's tabs. They load when first shown, so only the
-// active one is read now. (Older versions saved just the last file.)
-type Session = { tabs: string[]; active: string | null };
+// Restore the last session's tabs, with their unsaved edits. They load when
+// first shown, so only the active one is read now. (Older versions saved just
+// the last file.)
 const legacyFile = prefs.get<string | null>("lastFile", null);
 const session = prefs.get<Session | null>("session", legacyFile ? { tabs: [legacyFile], active: legacyFile } : null);
-docs = (session?.tabs ?? []).map((p) => makeDoc(p));
-const preferred = docs.find((d) => samePath(d.path, session?.active ?? null));
+let unsaved: Record<string, string> = {};
+try {
+  unsaved = JSON.parse((await invoke<string | null>("read_unsaved")) ?? "{}");
+} catch {
+  /* nothing kept */
+}
+const restored = (session?.tabs ?? []).map((t): Doc | null => {
+  if (typeof t === "string") return makeDoc(t);
+  const text = unsaved[t.key];
+  if (text === undefined) return t.path ? makeDoc(t.path) : null; // kept text lost: fall back to the file
+  const d = makeDoc(t.path);
+  d.key = t.key;
+  d.backup = text;
+  d.dirty = true;
+  return d;
+});
+const active = session?.active;
+const preferred = typeof active === "number" ? restored[active] : restored.find((d) => d && samePath(d.path, active ?? null));
+docs = restored.filter((d): d is Doc => d !== null);
 mru = preferred ? [preferred, ...docs.filter((d) => d !== preferred)] : [...docs];
 
 const initial = await invoke<string | null>("initial_file");

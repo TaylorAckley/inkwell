@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: TaylorAckley.Inkwell
+PackageVersion: 0.2.0
+PackageLocale: en-US
+Publisher: Taylor Ackley
+PublisherUrl: https://github.com/TaylorAckley
+PublisherSupportUrl: https://github.com/TaylorAckley/inkwell/issues
+PackageName: Inkwell
+PackageUrl: https://github.com/TaylorAckley/inkwell
+License: MIT
+LicenseUrl: https://github.com/TaylorAckley/inkwell/blob/main/LICENSE
+ShortDescription: A fast markdown editor and viewer for Windows.
+Description: |-
+  Inkwell is a markdown editor and viewer built with Rust and Tauri. It has a live GitHub-flavoured
+  preview with scroll sync, math and Mermaid diagrams, tabs, folder search, PDF and HTML export,
+  plain text and log viewing, and optional Claude writing help with your own API key.
+Moniker: inkwell
+Tags:
+  - markdown
+  - editor
+  - viewer
+  - notes
+  - writing
+ReleaseNotesUrl: https://github.com/TaylorAckley/inkwell/releases/tag/v0.2.0
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0
