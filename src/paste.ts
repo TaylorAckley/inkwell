@@ -19,6 +19,9 @@ function inCode(state: EditorState, pos: number) {
   return false;
 }
 
+/** A URL as a markdown link target; parentheses and spaces would end a bare one early. */
+const linkTarget = (url: string) => (/[()\s]/.test(url) ? `<${url}>` : url);
+
 /** `[selection](url)` when a URL is pasted over text on one line. */
 export function pasteLink(view: EditorView, data: DataTransfer): boolean {
   const url = data.getData("text/plain").trim();
@@ -28,9 +31,8 @@ export function pasteLink(view: EditorView, data: DataTransfer): boolean {
   if (ranges.some((r) => r.empty || inCode(state, r.from))) return false;
   const texts = ranges.map((r) => state.sliceDoc(r.from, r.to));
   if (texts.some((t) => t.includes("\n") || URL_TEXT.test(t.trim()))) return false;
-  const target = /[()\s]/.test(url) ? `<${url}>` : url;
   const tr = state.changeByRange((r) => {
-    const insert = `[${state.sliceDoc(r.from, r.to)}](${target})`;
+    const insert = `[${state.sliceDoc(r.from, r.to)}](${linkTarget(url)})`;
     return { changes: { from: r.from, to: r.to, insert }, range: EditorSelection.cursor(r.from + insert.length) };
   });
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.paste" }));
@@ -123,10 +125,10 @@ function makeService(Turndown: typeof TurndownService) {
   td.addRule("image", {
     filter: "img",
     replacement: (_content, node) => {
-      const src = (node as HTMLElement).getAttribute("src") ?? "";
+      const src = ((node as HTMLElement).getAttribute("src") ?? "").trim();
       if (!/^https?:\/\//i.test(src)) return "";
       const alt = ((node as HTMLElement).getAttribute("alt") ?? "").replace(/[[\]\n]/g, "");
-      return `![${alt}](${src})`;
+      return `![${alt}](${linkTarget(src)})`;
     },
   });
 

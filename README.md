@@ -73,7 +73,7 @@ git fetch origin && git tag v0.2.0 origin/main && git push origin v0.2.0
 
 The Release workflow builds and signs the installer and attaches it, with the `latest.json` the updater reads, to a draft release on GitHub. Publishing the draft is what ships the update to installed copies.
 
-Publishing also runs the WinGet workflow, which opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) for the new version. It needs a `WINGET_TOKEN` secret (a classic token with the `public_repo` scope, from an account with a fork of winget-pkgs). `winget/` holds the manifests from the first submission.
+Publishing also runs the WinGet workflow, which opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) for the new version. It needs a `WINGET_TOKEN` secret (a classic token with the `public_repo` and `workflow` scopes, from an account with a fork of winget-pkgs). Without the `workflow` scope, syncing the fork can fail: sync it on GitHub and rerun the workflow. `winget/` holds the manifests from the first submission.
 
 The workflow reads the signing key from the `TAURI_SIGNING_PRIVATE_KEY` repository secret (the key file has no password). A local `tauri build` needs the same key in that environment variable, or it fails at the signing step. If the key is lost, installed copies can't update and must be reinstalled by hand.
 

@@ -932,6 +932,7 @@ async function openDialog() {
 
 /** Save a document (asking where, if it's new or `saveAs`). False if cancelled or failed. */
 async function saveDoc(d: Doc, saveAs = false): Promise<boolean> {
+  if (!stateOf(d) && d.backup !== null && !(await activate(d))) return false; // edits restored from last run
   const state = stateOf(d);
   if (!state) return true; // never shown, so never edited
   if (d.readOnly) {
@@ -1009,7 +1010,7 @@ const sidebar = createSidebar({
     let changed = false;
     for (const d of [...docs]) {
       if (!d.path || !isInside(d.path, path)) continue;
-      if (!d.state) {
+      if (!d.state && d.backup === null) {
         removeDoc(d); // never shown, so there's nothing to keep
         continue;
       }

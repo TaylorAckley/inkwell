@@ -69,13 +69,15 @@ export function tableFromCells(rows: string[][]): string {
   return formatRows([rows[0], Array<string>(columns).fill("---"), ...rows.slice(1)]).join("\n");
 }
 
-/** The lines of the table around `pos`, if it's in one. */
-function tableAt(state: EditorState, pos: number): { first: number; last: number } | null {
+/** The lines of the table around `pos`, if it's in one and nothing but indentation comes before it. */
+function tableAt(state: EditorState, pos: number): { first: number; last: number; indent: string } | null {
   for (const side of [-1, 1] as const) {
     for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, side); node; node = node.parent) {
-      if (node.name === "Table") {
-        return { first: state.doc.lineAt(node.from).number, last: state.doc.lineAt(node.to).number };
-      }
+      if (node.name !== "Table") continue;
+      const line = state.doc.lineAt(node.from);
+      const before = line.text.slice(0, node.from - line.from);
+      if (before.trim()) return null; // a list marker shares the first row
+      return { first: line.number, last: state.doc.lineAt(node.to).number, indent: before };
     }
   }
   return null;
@@ -148,7 +150,7 @@ function moveCell(dir: 1 | -1) {
     if (row < 0) return true; // already in the first cell
     if (row >= rows.length) rows.push(Array<string>(columns).fill(""));
 
-    const formatted = formatRows(rows);
+    const formatted = formatRows(rows).map((l) => table.indent + l); // a table in a list stays in it
     const from = state.doc.line(table.first).from;
     const to = state.doc.line(table.last).to;
     const offset = formatted.slice(0, row).reduce((n, l) => n + l.length + 1, 0);
