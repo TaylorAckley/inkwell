@@ -284,12 +284,16 @@ let activateSeq = 0;
 async function activate(d: Doc, at?: At): Promise<boolean> {
   const seq = ++activateSeq;
   if (!d.state) {
-    if (!d.path) loadText(d, { text: "", exact: true });
-    else {
+    if (!d.path) {
+      const baseline = d.savedText; // a deleted file's document stays dirty, even if emptied
+      loadText(d, { text: "", exact: true });
+      d.savedText = baseline;
+    } else {
+      let file: FileText | null = null;
       try {
-        loadText(d, await readFile(d.path));
+        file = await readFile(d.path);
       } catch {
-        if (d.backup === null) {
+        if (!d.state && d.backup === null) {
           if (docs.includes(d)) {
             toast(`Couldn't open ${fileName(d.path)}`);
             sidebar.removeRecent(d.path);
@@ -297,6 +301,10 @@ async function activate(d: Doc, at?: At): Promise<boolean> {
           }
           return false;
         }
+      }
+      // Another activation of this document may have finished first; its state has the edits.
+      if (!d.state && file) loadText(d, file);
+      else if (!d.state) {
         // Gone, but its unsaved edits survive: keep them, and Ctrl+S puts the file back.
         loadText(d, { text: "", exact: true });
         d.savedText = ORPHANED;
@@ -372,15 +380,21 @@ function saveSession() {
 
 let keepTimer = 0;
 let keptNothing = false;
+/** The latest write. Writes run one at a time, so an older snapshot can't land last. */
+let keeping: Promise<void> = Promise.resolve();
 
 function queueKeepUnsaved() {
   clearTimeout(keepTimer);
   keepTimer = window.setTimeout(() => void keepUnsaved().catch(() => {}), 800);
 }
 
-/** Write every unsaved document's text to the hot-exit store. */
-async function keepUnsaved() {
+/** Write every unsaved document's text to the hot-exit store, after any write in progress. */
+function keepUnsaved() {
   clearTimeout(keepTimer);
+  return (keeping = keeping.catch(() => {}).then(writeUnsaved));
+}
+
+async function writeUnsaved() {
   const unsaved: Record<string, string> = {};
   for (const d of docs) {
     if (!d.dirty) continue;
@@ -1318,7 +1332,15 @@ function onPaste(e: ClipboardEvent) {
   const markdown = richPaste(view, data);
   if (!markdown) return false;
   e.preventDefault();
-  markdown.then(insertText, reportError);
+  const destination = doc;
+  const { state } = view;
+  markdown.then((text) => {
+    if (doc !== destination || view.state.doc !== state.doc || !view.state.selection.eq(state.selection)) {
+      toast("Paste canceled because the document changed. Paste again.");
+      return;
+    }
+    insertText(text);
+  }, reportError);
   return true;
 }
 
@@ -1617,6 +1639,7 @@ void appWindow.onResized(() => void refreshMaxGlyph());
  */
 async function readyToQuit(): Promise<boolean> {
   savePosition();
+  refreshDirty(view.state.doc.toString()); // typing since the last render counts
   saveSession();
   try {
     await keepUnsaved();
