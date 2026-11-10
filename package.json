@@ -24,9 +24,9 @@
     "@tauri-apps/plugin-opener": "^2.2.0",
     "@tauri-apps/plugin-updater": "^2.14.1",
     "highlight.js": "^11.10.0",
-    "katex": "^0.16.47",
+    "katex": "^0.19.1",
     "mermaid": "^11.17.2",
-    "turndown": "^7.2.4"
+    "turndown": "^7.2.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",
