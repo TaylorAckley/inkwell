@@ -104,6 +104,27 @@ async fn write_file(path: PathBuf, contents: String, watched: State<'_, Watched>
     Ok(())
 }
 
+/// Where unsaved edits are kept between runs (hot exit), as JSON the frontend owns.
+fn unsaved_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("unsaved.json"))
+}
+
+/// The unsaved edits from the last run, or None if there were none.
+#[tauri::command]
+async fn read_unsaved(app: tauri::AppHandle) -> Option<String> {
+    fs::read_to_string(unsaved_path(&app).ok()?).ok()
+}
+
+/// Replace the kept unsaved edits, atomically so a crash mid-write keeps the previous copy.
+#[tauri::command]
+async fn write_unsaved(app: tauri::AppHandle, contents: String) -> Result<(), String> {
+    let path = unsaved_path(&app)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, contents).and_then(|_| fs::rename(&tmp, &path)).map_err(|e| format!("Could not keep unsaved edits: {e}"))
+}
+
 /// Watch exactly `paths` for external changes. Files already watched keep
 /// their last-seen time, so a change made in the meantime is still reported.
 #[tauri::command]
@@ -232,6 +253,8 @@ fn main() {
             read_file,
             write_file,
             watch_files,
+            read_unsaved,
+            write_unsaved,
             list_dir,
             initial_file,
             shell::create_file,

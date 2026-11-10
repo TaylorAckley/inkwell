@@ -10,10 +10,21 @@ A fast markdown editor and viewer for Windows, built with Rust and Tauri 2.
 - **Sidebar (Ctrl+\\):** files (recent plus a folder tree), an outline of the document (Ctrl+Shift+O), folder search (Ctrl+Shift+F) and the Ask panel.
 - **Quick open (Ctrl+P):** fuzzy-find any document in the folder.
 - **Writing:** GitHub's formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+E, Ctrl+K, Ctrl+Shift+7/8/.), and pasted screenshots saved to `./assets`.
+- **Paste:** a URL pasted over selected text becomes a link, and rich text from a web page, Word or Google Docs arrives as markdown (headings, lists, links, tables). Ctrl+Shift+V pastes plain text.
+- **Tables:** Tab and Shift+Tab move between cells and line the columns up; Tab in the last cell adds a row.
+- **Hot exit:** quitting never asks to save. Unsaved edits, including untitled tabs, come back next time, and also survive crashes and update restarts.
 - **Text and logs:** `.txt` and `.log` files open editor-only, without the preview or markdown formatting. Logs get line numbers, colored levels (ERROR, WARN, INFO, DEBUG) and timestamps, no wrapping, and follow new lines while scrolled to the end, like `tail -f`. Files that aren't UTF-8 (UTF-16, Windows-1252) open read-only so saving can't change their bytes. Files over 64 MB are refused.
 - **Export:** PDF (Ctrl+Shift+E), standalone HTML, and rich-text copy.
 - **External changes:** open files are polled for changes. A tab with no unsaved edits reloads quietly, keeping scroll position and undo history; otherwise you're asked first.
 - **Window:** Windows 11 Mica, a custom title bar, light and dark themes, and drag-and-drop to open files.
+
+## Install
+
+```bash
+winget install TaylorAckley.Inkwell
+```
+
+Or download the installer from the [latest release](https://github.com/TaylorAckley/inkwell/releases/latest). Either way, Inkwell updates itself after that.
 
 ## Claude
 
@@ -61,6 +72,8 @@ git fetch origin && git tag v0.2.0 origin/main && git push origin v0.2.0
 ```
 
 The Release workflow builds and signs the installer and attaches it, with the `latest.json` the updater reads, to a draft release on GitHub. Publishing the draft is what ships the update to installed copies.
+
+Publishing also runs the WinGet workflow, which opens a pull request to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) for the new version. It needs a `WINGET_TOKEN` secret (a classic token with the `public_repo` and `workflow` scopes, from an account with a fork of winget-pkgs). Without the `workflow` scope, syncing the fork can fail: sync it on GitHub and rerun the workflow. `winget/` holds the manifests from the first submission.
 
 The workflow reads the signing key from the `TAURI_SIGNING_PRIVATE_KEY` repository secret (the key file has no password). A local `tauri build` needs the same key in that environment variable, or it fails at the signing step. If the key is lost, installed copies can't update and must be reinstalled by hand.
 

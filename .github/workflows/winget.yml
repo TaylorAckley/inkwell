@@ -1,0 +1,45 @@
+name: WinGet
+
+# When a release is published, open a pull request to microsoft/winget-pkgs
+# for the new version, so `winget upgrade` picks it up once Microsoft merges it.
+# Needs a WINGET_TOKEN secret: a classic token with the public_repo and workflow
+# scopes, from the account that owns this repository and a fork of winget-pkgs.
+# The workflow scope lets `komac sync-fork` copy workflow changes from upstream.
+# Without it, a sync can fail: sync the fork on GitHub, then rerun this workflow.
+on:
+  release:
+    types: [released]
+
+permissions:
+  contents: read
+
+env:
+  # komac gets WINGET_TOKEN, so it's a fixed release checked against its hash.
+  KOMAC_VERSION: 2.17.1
+  KOMAC_SHA256: a97c002c5ffa15f232af117efac6774e755d27acc47eba00f1661033267d7438
+
+jobs:
+  publish:
+    name: Submit to winget-pkgs
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Install komac
+        run: |
+          $exe = "komac-$env:KOMAC_VERSION-x86_64-pc-windows-msvc.exe"
+          Invoke-WebRequest "https://github.com/russellbanks/Komac/releases/download/v$env:KOMAC_VERSION/$exe" -OutFile komac.exe
+          if ((Get-FileHash komac.exe -Algorithm SHA256).Hash -ne $env:KOMAC_SHA256) { throw "komac.exe does not match its pinned hash" }
+
+      - name: Submit the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          KOMAC_FORK_OWNER: ${{ github.repository_owner }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = $env:TAG -replace '^v'
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/Inkwell_${version}_x64-setup.exe"
+          ./komac.exe sync-fork
+          ./komac.exe update TaylorAckley.Inkwell --version $version --urls $url --submit

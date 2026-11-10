@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+PackageIdentifier: TaylorAckley.Inkwell
+PackageVersion: 0.2.0
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+UpgradeBehavior: install
+ProductCode: Inkwell
+FileExtensions:
+  - md
+  - markdown
+ReleaseDate: 2026-11-03
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/TaylorAckley/inkwell/releases/download/v0.2.0/Inkwell_0.2.0_x64-setup.exe
+    InstallerSha256: 5DF3A53879DCA6AE96C2532ADA7B1D04192175F4C38A80375135072735BB46C5
+ManifestType: installer
+ManifestVersion: 1.10.0
