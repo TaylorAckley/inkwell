@@ -100,10 +100,8 @@ fn request_body(req: &AiRequest) -> Value {
 }
 
 /// A readable message from an API error response.
-fn api_error(status: u16, response: ureq::Response) -> String {
-    let detail = response
-        .into_string()
-        .ok()
+fn api_error(status: u16, body: Option<String>) -> String {
+    let detail = body
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v["error"]["message"].as_str().map(String::from));
     let hint = match status {
@@ -123,26 +121,31 @@ fn api_error(status: u16, response: ureq::Response) -> String {
 
 fn run(app: &AppHandle, key: &str, req: &AiRequest, cancel: &AtomicBool) -> Result<AiEvent, String> {
     let id = req.id;
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(20))
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(20)))
         // Long thinking pauses are covered by the API's keep-alive pings.
-        .timeout_read(Duration::from_secs(120))
-        .build();
+        .timeout_per_read(Some(Duration::from_secs(120)))
+        // Error statuses come back as responses, so their JSON message can be shown.
+        .http_status_as_error(false)
+        .build()
+        .into();
     let mut call = agent
         .post(API_URL)
-        .set("x-api-key", key)
-        .set("anthropic-version", API_VERSION)
-        .set("content-type", "application/json");
+        .header("x-api-key", key)
+        .header("anthropic-version", API_VERSION)
+        .header("content-type", "application/json");
     if supports_fallback(&req.model) {
-        call = call.set("anthropic-beta", FALLBACK_BETA);
+        call = call.header("anthropic-beta", FALLBACK_BETA);
     }
-    let response = match call.send_string(&request_body(req).to_string()) {
-        Ok(r) => r,
-        Err(ureq::Error::Status(status, r)) => return Err(api_error(status, r)),
-        Err(e) => return Err(format!("Could not reach the Claude API: {e}")),
-    };
+    let mut response = call
+        .send(request_body(req).to_string())
+        .map_err(|e| format!("Could not reach the Claude API: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(api_error(status.as_u16(), response.body_mut().read_to_string().ok()));
+    }
 
-    let stop_reason = read_stream(BufReader::new(response.into_reader()), cancel, |text| {
+    let stop_reason = read_stream(BufReader::new(response.into_body().into_reader()), cancel, |text| {
         let _ = app.emit("ai", AiEvent::Text { id, text });
     })?;
     Ok(AiEvent::Done { id, stop_reason })
