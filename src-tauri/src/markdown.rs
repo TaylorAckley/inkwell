@@ -28,7 +28,7 @@ pub fn render(source: &str) -> String {
     o.extension.math_dollars = true;
     o.extension.math_code = true;
     o.render.sourcepos = true;
-    o.render.unsafe_ = raw_html;
+    o.render.r#unsafe = raw_html;
     o.render.github_pre_lang = false;
     // Heading anchors are added by `anchor_headings`: comrak's own
     // de-duplication is quadratic in the number of repeated headings.

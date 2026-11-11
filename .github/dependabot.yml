@@ -15,6 +15,10 @@ updates:
     groups:
       cargo-minor:
         update-types: [minor, patch]
+    ignore:
+      # Must match the versions wry uses for WebView2, so they move with Tauri.
+      - dependency-name: windows-core
+      - dependency-name: webview2-com
 
   - package-ecosystem: github-actions
     directory: /
