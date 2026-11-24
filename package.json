@@ -19,9 +19,9 @@
     "@codemirror/state": "^6.4.0",
     "@codemirror/view": "^6.34.0",
     "@lezer/highlight": "^1.2.0",
-    "@tauri-apps/api": "^2.1.0",
+    "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.0.0",
-    "@tauri-apps/plugin-opener": "^2.2.0",
+    "@tauri-apps/plugin-opener": "^2.7.3",
     "@tauri-apps/plugin-updater": "^2.14.1",
     "highlight.js": "^11.10.0",
     "katex": "^0.19.1",
@@ -29,9 +29,9 @@
     "turndown": "^7.2.5"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
+    "@tauri-apps/cli": "^2.12.6",
     "@types/turndown": "^5.0.6",
     "typescript": "^7.0.2",
-    "vite": "^8.3.6"
+    "vite": "^8.3.8"
   }
 }
